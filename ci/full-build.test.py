@@ -23,6 +23,14 @@ class Versions(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '分页停滞'):
             BUILD.all_tags(Client())
 
+    def test_short_pages_are_read_until_empty_instead_of_truncating_versions(self):
+        class Client:
+            repository = 'sdbcbt/cloudlinkpos'
+            pages = [['service-v0.1.1'], ['service-v1.0.2'], []]
+            def authenticated(self, path):
+                return 200, {}, json.dumps({'name': self.repository, 'tags': self.pages.pop(0)}).encode()
+        self.assertEqual(BUILD.next_version('service', BUILD.all_tags(Client())), 'service-v1.0.3')
+
     def test_registry_error_and_wrong_repository_are_rejected(self):
         class Client:
             repository = 'sdbcbt/cloudlinkpos'
