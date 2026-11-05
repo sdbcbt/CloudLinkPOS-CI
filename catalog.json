@@ -1,5 +1,181 @@
 [
   {
+    "sourceSHA": "7ab419d18d994f733c1c84d35f14ff96a8294a46",
+    "beforeSHA": "460196c5397a86808eff05a2bff66b81629ffa27",
+    "expectedServices": [
+      "admin",
+      "user-api",
+      "wechat-api",
+      "wechat-rpc"
+    ],
+    "publicationPolicy": {
+      "grayRequired": false,
+      "generation": 1
+    },
+    "schema": "cloudlinkpos.public-source-build/v1",
+    "sourceRepository": "sdbcbt/CloudLinkPOS",
+    "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+    "runID": "42074950765",
+    "attempt": "1",
+    "workflowSHA": "3cec54f95ac5154a455e67dd8c6165ab89b54997",
+    "workflowPath": ".github/workflows/private-main.yml",
+    "path": "builds/7ab419d18d994f733c1c84d35f14ff96a8294a46/42074950765-1.json",
+    "receipts": [
+      {
+        "schema": "cloudlinkpos.public-full-build/v1",
+        "sourceRepository": "sdbcbt/CloudLinkPOS",
+        "sourceSHA": "7ab419d18d994f733c1c84d35f14ff96a8294a46",
+        "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+        "workflowSHA": "3cec54f95ac5154a455e67dd8c6165ab89b54997",
+        "runID": "42074950765",
+        "attempt": "1",
+        "service": "admin",
+        "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+        "tag": "admin-v0.3.12",
+        "digest": "sha256:dd54a6fd0f7c8ba1730f57f93644e03859137254d679c0f97b8cec372193f0da",
+        "tagPolicy": "version-and-latest-v1",
+        "metadataSHA256": "c9e54168d3d93588b8ab0a94315e3d06de10b75b6c6f6b9fa38c0074dece676a",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:dd54a6fd0f7c8ba1730f57f93644e03859137254d679c0f97b8cec372193f0da"
+        }
+      }
+    ]
+  },
+  {
+    "sourceSHA": "7ab419d18d994f733c1c84d35f14ff96a8294a46",
+    "beforeSHA": "460196c5397a86808eff05a2bff66b81629ffa27",
+    "expectedServices": [
+      "admin",
+      "user-api",
+      "wechat-api",
+      "wechat-rpc"
+    ],
+    "publicationPolicy": {
+      "grayRequired": false,
+      "generation": 1
+    },
+    "schema": "cloudlinkpos.public-source-build/v1",
+    "sourceRepository": "sdbcbt/CloudLinkPOS",
+    "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+    "runID": "42074950765",
+    "attempt": "1",
+    "workflowSHA": "3cec54f95ac5154a455e67dd8c6165ab89b54997",
+    "workflowPath": ".github/workflows/private-main.yml",
+    "path": "builds/7ab419d18d994f733c1c84d35f14ff96a8294a46/42074950765-1.json",
+    "receipts": [
+      {
+        "schema": "cloudlinkpos.public-full-build/v1",
+        "sourceRepository": "sdbcbt/CloudLinkPOS",
+        "sourceSHA": "7ab419d18d994f733c1c84d35f14ff96a8294a46",
+        "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+        "workflowSHA": "3cec54f95ac5154a455e67dd8c6165ab89b54997",
+        "runID": "42074950765",
+        "attempt": "1",
+        "service": "user-api",
+        "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+        "tag": "user-api-v0.3.10",
+        "digest": "sha256:f2ef70449711e22f499cb5adc58886e6eb08dfa6a88eb56e1598efae377c890f",
+        "tagPolicy": "version-and-latest-v1",
+        "metadataSHA256": "898cd2b0fa5d66aafab6120ab12aab7acd3c02caed81bdd377a880fb0e59b420",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:f2ef70449711e22f499cb5adc58886e6eb08dfa6a88eb56e1598efae377c890f"
+        }
+      }
+    ]
+  },
+  {
+    "sourceSHA": "7ab419d18d994f733c1c84d35f14ff96a8294a46",
+    "beforeSHA": "460196c5397a86808eff05a2bff66b81629ffa27",
+    "expectedServices": [
+      "admin",
+      "user-api",
+      "wechat-api",
+      "wechat-rpc"
+    ],
+    "publicationPolicy": {
+      "grayRequired": false,
+      "generation": 1
+    },
+    "schema": "cloudlinkpos.public-source-build/v1",
+    "sourceRepository": "sdbcbt/CloudLinkPOS",
+    "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+    "runID": "42074950765",
+    "attempt": "1",
+    "workflowSHA": "3cec54f95ac5154a455e67dd8c6165ab89b54997",
+    "workflowPath": ".github/workflows/private-main.yml",
+    "path": "builds/7ab419d18d994f733c1c84d35f14ff96a8294a46/42074950765-1.json",
+    "receipts": [
+      {
+        "schema": "cloudlinkpos.public-full-build/v1",
+        "sourceRepository": "sdbcbt/CloudLinkPOS",
+        "sourceSHA": "7ab419d18d994f733c1c84d35f14ff96a8294a46",
+        "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+        "workflowSHA": "3cec54f95ac5154a455e67dd8c6165ab89b54997",
+        "runID": "42074950765",
+        "attempt": "1",
+        "service": "wechat-api",
+        "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+        "tag": "wechat-api-v0.3.8",
+        "digest": "sha256:c1e6a9c16085b81115fff72e960fc63923e743f4722f178a4f28a272fc4ca9e1",
+        "tagPolicy": "version-and-latest-v1",
+        "metadataSHA256": "2f2bfb387e181b1a1ac86d1314db47f2f24a78066e02716e6cb9eb890cf77513",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:c1e6a9c16085b81115fff72e960fc63923e743f4722f178a4f28a272fc4ca9e1"
+        }
+      }
+    ]
+  },
+  {
+    "sourceSHA": "7ab419d18d994f733c1c84d35f14ff96a8294a46",
+    "beforeSHA": "460196c5397a86808eff05a2bff66b81629ffa27",
+    "expectedServices": [
+      "admin",
+      "user-api",
+      "wechat-api",
+      "wechat-rpc"
+    ],
+    "publicationPolicy": {
+      "grayRequired": false,
+      "generation": 1
+    },
+    "schema": "cloudlinkpos.public-source-build/v1",
+    "sourceRepository": "sdbcbt/CloudLinkPOS",
+    "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+    "runID": "42074950765",
+    "attempt": "1",
+    "workflowSHA": "3cec54f95ac5154a455e67dd8c6165ab89b54997",
+    "workflowPath": ".github/workflows/private-main.yml",
+    "path": "builds/7ab419d18d994f733c1c84d35f14ff96a8294a46/42074950765-1.json",
+    "receipts": [
+      {
+        "schema": "cloudlinkpos.public-full-build/v1",
+        "sourceRepository": "sdbcbt/CloudLinkPOS",
+        "sourceSHA": "7ab419d18d994f733c1c84d35f14ff96a8294a46",
+        "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+        "workflowSHA": "3cec54f95ac5154a455e67dd8c6165ab89b54997",
+        "runID": "42074950765",
+        "attempt": "1",
+        "service": "wechat-rpc",
+        "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+        "tag": "wechat-rpc-v0.3.8",
+        "digest": "sha256:a0da57cf69a4ce187f06932f523fb0a7f1744e025c575d74862c55be4761655e",
+        "tagPolicy": "version-and-latest-v1",
+        "metadataSHA256": "f80ca77de28ed6e490a849968f9bf5966af4f9493c77cb44fd9e808c08b0f10c",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:a0da57cf69a4ce187f06932f523fb0a7f1744e025c575d74862c55be4761655e"
+        }
+      }
+    ]
+  },
+  {
     "sourceSHA": "f0a3d80f09fd97e6472d661a9a59cdd891e633ac",
     "beforeSHA": "356f19df558ff73df6724ee781e71782e22b623b",
     "expectedServices": [
