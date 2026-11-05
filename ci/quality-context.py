@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 import urllib.request
 
 REPO = "sdbcbt/CloudLinkPOS"
@@ -39,6 +40,12 @@ def context():
         if not re.fullmatch("[1-9][0-9]*", number):
             raise ValueError("PR 编号无效")
         pr = api(f"/repos/{REPO}/pulls/{number}")
+        # GitHub 更新 PR 后可能尚未计算合并状态，有限重读相同事件。
+        for _ in range(3):
+            if pr["mergeable"] is not None:
+                break
+            time.sleep(2)
+            pr = api(f"/repos/{REPO}/pulls/{number}")
         if pr["head"]["repo"]["full_name"] != REPO or pr["base"]["ref"] != "main":
             raise ValueError("PR 来源不在允许范围")
         if pr["head"]["sha"] != head or pr["base"]["sha"] != base:
@@ -52,9 +59,9 @@ def context():
         ref = "refs/heads/main"
         commit = head
         parents = []
-        latest = api(f"/repos/{REPO}/commits/main")
-        if latest["sha"] != head:
-            raise ValueError("主线已更新，请等待最新通知")
+        comparison = api(f"/repos/{REPO}/compare/{head}...main")
+        if comparison["status"] not in ("ahead", "identical"):
+            raise ValueError("提交不在当前主线历史中")
     else:
         raise ValueError("不支持的通知类型")
     return {"head": head, "base": base, "ref": ref, "commit": commit, "parents": parents}
@@ -92,9 +99,14 @@ def checkout():
     git("-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + credential,
         "fetch", "--quiet", "--no-tags", "origin", ctx["ref"])
     tip = git("rev-parse", "FETCH_HEAD", capture=True).stdout.decode().strip()
-    if tip != ctx["commit"]:
-        raise ValueError("源分支已更新，禁止检查其他提交")
-    git("checkout", "--quiet", "--detach", tip)
+    if ctx["parents"]:
+        if tip != ctx["commit"]:
+            raise ValueError("PR 已更新，禁止检查其他提交")
+    else:
+        history = git("rev-list", "--first-parent", tip, capture=True).stdout.decode().splitlines()
+        if ctx["commit"] not in history:
+            raise ValueError("提交不在主线首父历史中")
+    git("checkout", "--quiet", "--detach", ctx["commit"])
     if ctx["parents"]:
         actual = git("show", "-s", "--format=%P", "HEAD", capture=True).stdout.decode().split()
         if actual != ctx["parents"]:
