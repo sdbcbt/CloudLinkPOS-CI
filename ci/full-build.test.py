@@ -1,6 +1,9 @@
 """核对版本递增及仓库分页失败保护。"""
 import importlib.util
 import json
+import hashlib
+import tempfile
+from unittest.mock import patch
 from pathlib import Path
 import unittest
 
@@ -38,6 +41,24 @@ class Versions(unittest.TestCase):
                 return 403, {}, b'{"name":"other","tags":[]}'
         with self.assertRaisesRegex(ValueError, '未核验'):
             BUILD.all_tags(Client())
+
+
+class AdminContext(unittest.TestCase):
+    def test_registry_version_preserves_manual_source_and_refreshes_archive_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'context/artifacts').mkdir(parents=True)
+            (root / 'context/Dockerfile').write_text('FROM fixture\nLABEL io.cloudlinkpos.release-tag="admin-v0.1.12"\n')
+            (root / 'release.json').write_text(json.dumps({'release_tag': 'admin-v0.1.12', 'release_source': 'manual', 'git_tag': '', 'context_sha256': 'old'}))
+            with patch.object(BUILD, 'run', return_value=b'new-normalized-archive'):
+                BUILD.stamp_admin_version(root, 'admin-v0.3.5')
+            metadata = json.loads((root / 'release.json').read_text())
+            self.assertEqual(metadata['git_tag'], '')
+            self.assertEqual(metadata['release_source'], 'manual')
+            self.assertEqual(metadata['release_tag'], 'admin-v0.3.5')
+            self.assertEqual(metadata['context_sha256'], hashlib.sha256((root / 'context.tar').read_bytes()).hexdigest())
+            self.assertEqual(metadata['aliases'], [BUILD.IMAGE + ':admin-v0.3.5'])
+            self.assertIn('release-tag="admin-v0.3.5"', (root / 'context/Dockerfile').read_text())
 
 
 if __name__ == '__main__':
