@@ -1,0 +1,14 @@
+[
+  {
+    "sourceSHA": "f0a3d80f09fd97e6472d661a9a59cdd891e633ac",
+    "beforeSHA": "356f19df558ff73df6724ee781e71782e22b623b",
+    "runID": "42068020419",
+    "attempt": "1",
+    "workflowSHA": "3cec54f95ac5154a455e67dd8c6165ab89b54997",
+    "publicationPolicy": {
+      "grayRequired": false,
+      "generation": 1
+    },
+    "path": "builds/f0a3d80f09fd97e6472d661a9a59cdd891e633ac/42068020419-1.json"
+  }
+]
