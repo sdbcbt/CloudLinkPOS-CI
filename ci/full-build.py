@@ -91,8 +91,10 @@ def build(service):
         if service == 'admin':
             STAGE = '构建管理后台'
             print(STAGE, flush=True)
-            run([sys.executable, 'deploy/scripts/prepare-admin-ci-environment.py'], ROOT)
+            # 托管 Runner 直接访问官方源，不运行自建主机的强制代理初始化。
             run(['pnpm', '--dir', 'apps/admin', 'install', '--frozen-lockfile', '--registry=https://registry.npmjs.org', '--fetch-timeout=120000', '--fetch-retries=2'], ROOT)
+            STAGE = '编译管理后台页面'
+            print(STAGE, flush=True)
             run(['pnpm', '--dir', 'apps/admin', 'run', 'build:antd'], ROOT)
             script, extra = 'prepare-admin-ci-context.py', []
         else:
