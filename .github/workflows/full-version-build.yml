@@ -29,6 +29,7 @@ permissions: {}
 concurrency:
   group: full-version-publication
   cancel-in-progress: false
+  queue: max
 jobs:
   plan:
     if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/main'

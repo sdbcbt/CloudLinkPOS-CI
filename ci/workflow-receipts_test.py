@@ -11,6 +11,7 @@ class WorkflowReceipts(unittest.TestCase):
         self.assertIn('pattern: receipt-*-attempt-${{ github.run_attempt }}', content)
         self.assertNotIn('pattern: receipt-*\n', content)
         self.assertIn('Re-run all jobs', content)
+        self.assertIn('  queue: max', content)
         self.assertIn('只重跑失败任务', content)
 
 
