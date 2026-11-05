@@ -1,0 +1,111 @@
+name: 全量正式版本构建
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 已合并私库主线的完整提交
+        required: true
+        type: string
+      services:
+        description: all 或用于入口验收的单服务名
+        required: true
+        default: all
+        type: string
+permissions: {}
+concurrency:
+  group: full-version-publication
+  cancel-in-progress: false
+jobs:
+  plan:
+    if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        id: auth
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: sdbcbt
+          repositories: CloudLinkPOS
+          permission-contents: read
+      - name: 核验并读取固定私库主线
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_TOKEN: ${{ steps.auth.outputs.token }}
+        run: python3 automation/ci/full-build.py checkout
+      - name: 选择全部实际服务和管理后台
+        id: plan
+        env:
+          SOURCE_SERVICES: ${{ inputs.services }}
+        run: python3 automation/ci/full-build.py plan
+  build:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      BUILD_SERVICE: ${{ matrix.service }}
+      DOCKER_BUILD_RECORD_UPLOAD: 'false'
+      DOCKER_BUILD_SUMMARY: 'false'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        id: auth
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: sdbcbt
+          repositories: CloudLinkPOS
+          permission-contents: read
+      - name: 核验并读取固定私库主线
+        env:
+          SOURCE_TOKEN: ${{ steps.auth.outputs.token }}
+        run: python3 automation/ci/full-build.py checkout
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903
+        if: matrix.service == 'admin'
+        with:
+          node-version: '22.20.0'
+          package-manager-cache: false
+      - name: 准备固定工具
+        run: |
+          python3 -m venv "$RUNNER_TEMP/python"
+          "$RUNNER_TEMP/python/bin/pip" -q install 'PyYAML==6.0.2'
+          echo "$RUNNER_TEMP/python/bin" >> "$GITHUB_PATH"
+          if [[ "$BUILD_SERVICE" == admin ]]; then
+            npm install --prefix "$RUNNER_TEMP/pnpm" --registry=https://registry.npmjs.org --ignore-scripts --no-audit --no-fund --package-lock=false pnpm@10.28.2 > /dev/null 2>&1
+            echo "$RUNNER_TEMP/pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+          fi
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2
+        with:
+          version: v0.20.1
+          driver: docker
+      - name: 构建并发布不可覆盖的正式版本
+        env:
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: python3 automation/ci/full-build.py build
+      - name: 仅保存版本和摘要收据
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: receipt-${{ matrix.service }}
+          path: receipts/*.json
+          if-no-files-found: error
+          retention-days: 7
