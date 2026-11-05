@@ -78,6 +78,7 @@ def build(service):
     publisher = module('acr_publish', ROOT / 'deploy/scripts/publish-acr-image.py')
     client = publisher.Registry(REGISTRY, 'sdbcbt', 'cloudlinkpos', os.environ['ACR_USERNAME'], os.environ['ACR_PASSWORD'])
     STAGE = '验证私有仓库与正式版本'
+    print(STAGE, flush=True)
     client.check_private_existing()
     version = next_version(service, all_tags(client))
     client.reject_existing_tags([version])
@@ -89,6 +90,7 @@ def build(service):
         base = dict(line.split('=', 1) for line in base_out.read_text().splitlines())['base_image']
         if service == 'admin':
             STAGE = '构建管理后台'
+            print(STAGE, flush=True)
             run([sys.executable, 'deploy/scripts/prepare-admin-ci-environment.py'], ROOT)
             run(['pnpm', '--dir', 'apps/admin', 'install', '--frozen-lockfile', '--registry=https://registry.npmjs.org', '--fetch-timeout=120000', '--fetch-retries=2'], ROOT)
             run(['pnpm', '--dir', 'apps/admin', 'run', 'build:antd'], ROOT)
@@ -96,10 +98,12 @@ def build(service):
         else:
             script, extra = 'prepare-service-ci-context.py', ['--service', service]
         STAGE = '准备经过校验的构建上下文'
+        print(STAGE, flush=True)
         output = folder / 'build'
         run([sys.executable, 'deploy/scripts/' + script, '--repo-root', str(ROOT), '--output-dir', str(output), '--release-tag', version, '--release-source', 'manual', '--source-sha', os.environ['SOURCE_SHA'], '--build-number', os.environ['GITHUB_RUN_NUMBER'], '--run-attempt', os.environ['GITHUB_RUN_ATTEMPT'], '--image-repository', IMAGE, '--base-image', base, *extra], ROOT)
         metadata = json.loads((output / 'release.json').read_text())
         STAGE = '编译正式镜像'
+        print(STAGE, flush=True)
         run(['docker', 'build', '--platform', 'linux/amd64', '-t', 'local-fullbuild:build', str(output / 'context')])
         # 仅将版本号推送到注册表，不使用上下文 SHA 标签。
         client.reject_existing_tags([version])
@@ -107,6 +111,7 @@ def build(service):
         run(['docker', 'login', REGISTRY, '-u', os.environ['ACR_USERNAME'], '--password-stdin'], env=env, data=os.environ['ACR_PASSWORD'].encode())
         try:
             STAGE = '发布并回读固定版本'
+            print(STAGE, flush=True)
             run(['docker', 'tag', 'local-fullbuild:build', IMAGE + ':' + version], env=env)
             log = run(['docker', 'push', IMAGE + ':' + version], env=env).decode()
             found = re.findall(r'digest: (sha256:[0-9a-f]{64})', log)
@@ -116,6 +121,7 @@ def build(service):
             client.verify_image(version, digest)
             evidence = client.prove_private(digest)
             STAGE = '更新并核验 latest'
+            print(STAGE, flush=True)
             run(['docker', 'buildx', 'imagetools', 'create', '--prefer-index=false', '-t', IMAGE + ':' + service + '-latest', IMAGE + '@' + digest], env=env)
             client.verify_image(service + '-latest', digest)
         finally:
