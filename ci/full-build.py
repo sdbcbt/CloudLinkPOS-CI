@@ -73,6 +73,26 @@ def all_tags(client):
     raise ValueError('仓库分页超出上限')
 
 
+
+def stamp_admin_version(output, version):
+    """将已验证的手动构建上下文标记为注册表分配版本，并重新计算上下文证据。"""
+    if not re.fullmatch(r'admin-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version):
+        raise ValueError('后台正式版本无效')
+    path = output / 'release.json'
+    metadata = json.loads(path.read_text())
+    dockerfile = output / 'context/Dockerfile'
+    content = dockerfile.read_text()
+    old = 'LABEL io.cloudlinkpos.release-tag="' + metadata['release_tag'] + '"'
+    if content.count(old) != 1 or metadata['release_source'] != 'manual' or metadata['git_tag']:
+        raise ValueError('后台手动构建标记不符')
+    dockerfile.write_text(content.replace(old, 'LABEL io.cloudlinkpos.release-tag="' + version + '"'))
+    artifacts = output / 'context/artifacts'
+    archive = run([sys.executable, str(ROOT / 'deploy/scripts/normalized-context-tar.py'), 'artifacts=' + str(artifacts), 'Dockerfile=' + str(dockerfile)])
+    (output / 'context.tar').write_bytes(archive)
+    metadata.update(release_tag=version, context_sha256=hashlib.sha256(archive).hexdigest(), tag=version, image=IMAGE + ':' + version, aliases=[IMAGE + ':' + version], tag_policy='version-and-latest-v1')
+    path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + '\n')
+
+
 def build(service):
     global STAGE
     publisher = module('acr_publish', ROOT / 'deploy/scripts/publish-acr-image.py')
@@ -102,7 +122,9 @@ def build(service):
         STAGE = '准备经过校验的构建上下文'
         print(STAGE, flush=True)
         output = folder / 'build'
-        run([sys.executable, 'deploy/scripts/' + script, '--repo-root', str(ROOT), '--output-dir', str(output), '--release-tag', version, '--release-source', 'manual', '--source-sha', os.environ['SOURCE_SHA'], '--build-number', os.environ['GITHUB_RUN_NUMBER'], '--run-attempt', os.environ['GITHUB_RUN_ATTEMPT'], '--image-repository', IMAGE, '--base-image', base, *extra], ROOT)
+        run([sys.executable, 'deploy/scripts/' + script, '--repo-root', str(ROOT), '--output-dir', str(output), '--release-tag', '' if service == 'admin' else version, '--release-source', 'manual', '--source-sha', os.environ['SOURCE_SHA'], '--build-number', os.environ['GITHUB_RUN_NUMBER'], '--run-attempt', os.environ['GITHUB_RUN_ATTEMPT'], '--image-repository', IMAGE, '--base-image', base, *extra], ROOT)
+        if service == 'admin':
+            stamp_admin_version(output, version)
         metadata = json.loads((output / 'release.json').read_text())
         STAGE = '编译正式镜像'
         print(STAGE, flush=True)
