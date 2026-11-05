@@ -31,10 +31,18 @@ class ContextTest(unittest.TestCase):
     def test_rejects_fork_and_stale_head(self):
         for changed in ("repo", "sha"):
             with self.subTest(changed=changed):
+                self.setUp()
                 self.pr["head"][changed] = {"full_name": "other/repo"} if changed == "repo" else "d" * 40
                 with patch.dict(os.environ, self.env), patch.object(quality, "api", return_value=self.pr):
                     with self.assertRaises(ValueError):
                         quality.context()
+
+    def test_earlier_main_push_keeps_its_exact_commit(self):
+        self.env["SOURCE_EVENT"] = "push"
+        with patch.dict(os.environ, self.env), patch.object(quality, "api", return_value={"status": "ahead"}):
+            value = quality.context()
+        self.assertEqual(value["commit"], self.head)
+        self.assertEqual(value["base"], self.base)
 
     def test_failed_scope_cannot_make_dependent_checks_green(self):
         env = {"CHECK_IDS": '{"scope":1,"backend":2,"pos":3,"admin":4,"semgrep":5}',
