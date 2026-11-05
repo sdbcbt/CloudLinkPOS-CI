@@ -1,0 +1,652 @@
+---
+name: 私库代码质量检查
+'on':
+  workflow_dispatch:
+    inputs:
+      event:
+        description: pr 或 push
+        type: string
+        required: true
+      base:
+        description: 基准提交
+        type: string
+        required: true
+      head:
+        description: 待检查提交
+        type: string
+        required: true
+      pr:
+        description: PR 编号，主线传 0
+        type: string
+        required: true
+permissions: {}
+jobs:
+  context:
+    if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      SOURCE_EVENT: "${{ inputs.event }}"
+      SOURCE_HEAD: "${{ inputs.head }}"
+      SOURCE_BASE: "${{ inputs.base }}"
+      SOURCE_PR: "${{ inputs.pr }}"
+    outputs:
+      context: "${{ steps.init.outputs.context }}"
+      checks: "${{ steps.init.outputs.checks }}"
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      with:
+        path: automation
+        persist-credentials: false
+    - name: 签发私库限定权限令牌
+      id: auth
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+      with:
+        app-id: "${{ vars.CI_APP_ID }}"
+        private-key: "${{ secrets.CI_APP_PRIVATE_KEY }}"
+        owner: sdbcbt
+        repositories: CloudLinkPOS
+        permission-contents: read
+        permission-pull-requests: read
+        permission-checks: write
+    - name: 验证通知并建立私库检查记录
+      id: init
+      env:
+        SOURCE_TOKEN: "${{ steps.auth.outputs.token }}"
+      run: python3 automation/ci/quality-context.py init
+  scope:
+    runs-on: ubuntu-24.04
+    outputs:
+      base: "${{ steps.scope.outputs.base }}"
+      full_scan: "${{ steps.scope.outputs.full_scan }}"
+      backend: "${{ steps.scope.outputs.backend }}"
+      pos: "${{ steps.scope.outputs.pos }}"
+      admin: "${{ steps.scope.outputs.admin }}"
+      semgrep: "${{ steps.scope.outputs.semgrep }}"
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      with:
+        path: automation
+        persist-credentials: false
+    - name: 签发私库限定权限令牌
+      id: auth
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+      with:
+        app-id: "${{ vars.CI_APP_ID }}"
+        private-key: "${{ secrets.CI_APP_PRIVATE_KEY }}"
+        owner: sdbcbt
+        repositories: CloudLinkPOS
+        permission-contents: read
+        permission-pull-requests: read
+    - name: 静默读取并校验私库固定提交
+      working-directory: "."
+      env:
+        SOURCE_TOKEN: "${{ steps.auth.outputs.token }}"
+      run: python3 automation/ci/quality-context.py checkout
+    - name: 使用固定 Python 工具链
+      uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
+      with:
+        python-version: '3.12'
+    - name: 验证检查脚本并识别改动范围
+      id: scope
+      env:
+        EVENT_NAME: "${{ inputs.event == 'pr' && 'pull_request' || 'push' }}"
+        PR_BASE: "${{ inputs.base }}"
+        PUSH_BEFORE: "${{ inputs.base }}"
+        PYTHONDONTWRITEBYTECODE: '1'
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        python3 dev/quality/check_test.py
+        python3 - <<'PY'
+        import argparse
+        import importlib.util
+        import os
+        import re
+        import subprocess
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location('quality', 'dev/quality/check.py')
+        quality = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(quality)
+        full_scan = False
+        if os.environ.get('EVENT_NAME') == 'push':
+            before = os.environ.get('PUSH_BEFORE', '')
+            if not re.fullmatch(r'[0-9a-f]{40}', before):
+                raise ValueError('main 推送缺少有效的 before SHA，不能退回只检查最后一次提交')
+            if before == '0' * 40:
+                # 首次推送没有旧分支提交，所有后续检查都必须使用全量范围。
+                base = ''
+                full_scan = True
+            else:
+                try:
+                    base = quality.git('rev-parse', '--verify', f'{before}^{{commit}}').strip()
+                    quality.git('merge-base', '--is-ancestor', base, 'HEAD')
+                except subprocess.CalledProcessError as error:
+                    raise ValueError('main 推送的 before 提交不可用或不是当前提交的祖先，停止范围检查') from error
+        else:
+            base = os.environ.get('PR_BASE') or quality.git('rev-parse', 'HEAD^').strip()
+        files = quality.select_files(argparse.Namespace(files=None, all=full_scan, base=base))
+        planned = {step['check'] for step in quality.build_plan(files, quality.DEFAULT_CHECKS)}
+        image_workflows = {
+            '.github/workflows/' + name for name in (
+                'quality.yml', 'release-service.yml', 'release-admin.yml',
+                'diagnose-images.yml', 'cancel-image-run.yml',
+            )
+        }
+        image_tool_names = (
+            'prepare-service-ci-context.', 'publish-acr-image.', 'pull-ci-base-image.',
+            'normalized-context-tar.', 'check-image-runner.', 'prepare-admin-ci-context.',
+            'report-service-ci-status.', 'diagnose-service-ci.', 'cancel-image-run.',
+            'prepare-acr-lab-release.', 'record-source-build.',
+        )
+        # 工具自测跟随工具与工作流变更，不再阻塞每次业务镜像发布。
+        image_tools_changed = full_scan or any(
+            name in image_workflows or (
+                name.startswith('deploy/scripts/') and Path(name).suffix == '.py'
+                and Path(name).name.startswith(image_tool_names)
+            ) for name in files
+        )
+        scopes = {
+            'backend': bool(planned & {'backend-format', 'contracts', 'go-vet', 'go-lint', 'gray-deps'}),
+            'pos': bool(planned & {'dart-format', 'dart-analyze'}),
+            'admin': bool(planned & {'admin-lint', 'admin-typecheck'}),
+            'semgrep': 'semgrep' in planned,
+            'image_tools': image_tools_changed,
+        }
+        with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+            output.write(f'base={base}\n')
+            output.write(f'full_scan={str(full_scan).lower()}\n')
+            for key, value in scopes.items():
+                output.write(f'{key}={str(value).lower()}\n')
+        print(scopes)
+        PY
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    - name: 按镜像工具变更验证发布边界
+      id: image_tests
+      if: "${{ steps.scope.outputs.image_tools == 'true' }}"
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        python_dir="$(mktemp -d "$RUNNER_TEMP/clp-quality-image-python.XXXXXX")"
+        python3 -m venv --without-pip "$python_dir"
+        python3 -m pip --python "$python_dir/bin/python" install --disable-pip-version-check --index-url https://pypi.org/simple 'PyYAML==6.0.2'
+        "$python_dir/bin/python" -c 'import sys, yaml; assert sys.prefix != sys.base_prefix; assert yaml.__version__ == "6.0.2"'
+        "$python_dir/bin/python" deploy/scripts/prepare-service-ci-context.test.py
+        "$python_dir/bin/python" deploy/scripts/publish-acr-image.test.py
+        "$python_dir/bin/python" deploy/scripts/pull-ci-base-image.test.py
+        "$python_dir/bin/python" deploy/scripts/report-service-ci-status.test.py
+        "$python_dir/bin/python" deploy/scripts/record-source-build.test.py
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    needs:
+    - context
+    env:
+      SOURCE_EVENT: "${{ inputs.event }}"
+      SOURCE_HEAD: "${{ inputs.head }}"
+      SOURCE_BASE: "${{ inputs.base }}"
+      SOURCE_PR: "${{ inputs.pr }}"
+      CHECK_CONTEXT: "${{ needs.context.outputs.context }}"
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+  backend:
+    needs:
+    - context
+    - scope
+    if: needs.scope.outputs.backend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GOPROXY: https://proxy.golang.org,direct
+      GOSUMDB: sum.golang.org
+      BASE: "${{ needs.scope.outputs.base }}"
+      FULL_SCAN: "${{ needs.scope.outputs.full_scan }}"
+      SOURCE_EVENT: "${{ inputs.event }}"
+      SOURCE_HEAD: "${{ inputs.head }}"
+      SOURCE_BASE: "${{ inputs.base }}"
+      SOURCE_PR: "${{ inputs.pr }}"
+      CHECK_CONTEXT: "${{ needs.context.outputs.context }}"
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      with:
+        path: automation
+        persist-credentials: false
+    - name: 签发私库限定权限令牌
+      id: auth
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+      with:
+        app-id: "${{ vars.CI_APP_ID }}"
+        private-key: "${{ secrets.CI_APP_PRIVATE_KEY }}"
+        owner: sdbcbt
+        repositories: CloudLinkPOS
+        permission-contents: read
+        permission-pull-requests: read
+    - name: 静默读取并校验私库固定提交
+      working-directory: "."
+      env:
+        SOURCE_TOKEN: "${{ steps.auth.outputs.token }}"
+      run: python3 automation/ci/quality-context.py checkout
+    - name: 使用固定 Python 工具链
+      uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
+      with:
+        python-version: '3.12'
+    - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+      with:
+        go-version-file: source/apps/backend/go.mod
+        cache: false
+    - name: 准备契约清单固定的格式工具
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        mkdir -p .tools/bin
+        goimports_version=$(python3 -c 'import json; print(json.load(open("apps/backend/dev/tools/codegen/toolchain.json"))["goimports"])')
+        goctl_version=$(python3 -c 'import json; print(json.load(open("apps/backend/dev/tools/codegen/toolchain.json"))["goctl"])')
+        clang_version=$(python3 -c 'import json; print(json.load(open("apps/backend/dev/tools/codegen/toolchain.json"))["clang-format"])')
+        GOBIN="$GITHUB_WORKSPACE/.tools/bin" go install "golang.org/x/tools/cmd/goimports@$goimports_version"
+        GOBIN="$GITHUB_WORKSPACE/.tools/bin" go install "github.com/zeromicro/go-zero/tools/goctl@v$goctl_version"
+        python3 -m venv --clear --without-pip .tools/quality/format-env
+        python3 -m pip --python .tools/quality/format-env/bin/python install --disable-pip-version-check "clang-format==$clang_version"
+        ln -sfn "$GITHUB_WORKSPACE/.tools/quality/format-env/bin/clang-format" .tools/bin/clang-format
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    - name: 准备固定 golangci-lint 并核验下载摘要
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        lint_version=$(python3 -c 'import json; print(json.load(open("dev/quality/tool-versions.json"))["golangci-lint"])')
+        test "$lint_version" = 2.15.0
+        archive="$RUNNER_TEMP/golangci-lint.tar.gz"
+        curl --fail --location --retry 3 "https://github.com/golangci/golangci-lint/releases/download/v${lint_version}/golangci-lint-${lint_version}-linux-amd64.tar.gz" -o "$archive"
+        echo "9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea  $archive" | sha256sum --check
+        mkdir -p ".tools/quality/golangci-lint/$lint_version"
+        tar -xzf "$archive" --strip-components=1 -C ".tools/quality/golangci-lint/$lint_version" "golangci-lint-${lint_version}-linux-amd64/golangci-lint"
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    - name: 检查格式、契约、vet 和新增 lint 问题
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        scope=(--base "$BASE")
+        if [[ "$FULL_SCAN" == true ]]; then
+          scope=(--all)
+        fi
+        python3 dev/quality/check.py "${scope[@]}" --checks backend-format,contracts,go-vet,go-lint,gray-deps
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+  pos:
+    needs:
+    - context
+    - scope
+    if: needs.scope.outputs.pos == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      BASE: "${{ needs.scope.outputs.base }}"
+      FULL_SCAN: "${{ needs.scope.outputs.full_scan }}"
+      SOURCE_EVENT: "${{ inputs.event }}"
+      SOURCE_HEAD: "${{ inputs.head }}"
+      SOURCE_BASE: "${{ inputs.base }}"
+      SOURCE_PR: "${{ inputs.pr }}"
+      CHECK_CONTEXT: "${{ needs.context.outputs.context }}"
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      with:
+        path: automation
+        persist-credentials: false
+    - name: 签发私库限定权限令牌
+      id: auth
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+      with:
+        app-id: "${{ vars.CI_APP_ID }}"
+        private-key: "${{ secrets.CI_APP_PRIVATE_KEY }}"
+        owner: sdbcbt
+        repositories: CloudLinkPOS
+        permission-contents: read
+        permission-pull-requests: read
+    - name: 静默读取并校验私库固定提交
+      working-directory: "."
+      env:
+        SOURCE_TOKEN: "${{ steps.auth.outputs.token }}"
+      run: python3 automation/ci/quality-context.py checkout
+    - name: 使用固定 Python 工具链
+      uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
+      with:
+        python-version: '3.12'
+    - name: 准备与 POS 已验证基线一致的 Flutter
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        # 缺少解压工具时只展开到本次任务目录，不安装或修改 Runner 系统软件。
+        if ! command -v unzip >/dev/null 2>&1; then
+          native_tools_dir="$(mktemp -d "$RUNNER_TEMP/quality-native-tools.XXXXXX")"
+          (
+            cd "$native_tools_dir"
+            apt-get download unzip
+            packages=(unzip_*.deb)
+            if [[ ${#packages[@]} -ne 1 || ! -f "${packages[0]}" ]]; then
+              echo "未取得唯一的 unzip 软件包" >&2
+              exit 1
+            fi
+            dpkg-deb --extract "${packages[0]}" "$native_tools_dir/root"
+          )
+          export PATH="$native_tools_dir/root/usr/bin:$PATH"
+          echo "$native_tools_dir/root/usr/bin" >> "$GITHUB_PATH"
+        fi
+        flutter_dir="$(mktemp -d "$RUNNER_TEMP/quality-flutter.XXXXXX")"
+        git clone --depth 1 --branch 3.44.2 https://github.com/flutter/flutter.git "$flutter_dir"
+        echo "FLUTTER_BIN=$flutter_dir/bin/flutter" >> "$GITHUB_ENV"
+        echo "DART_BIN=$flutter_dir/bin/cache/dart-sdk/bin/dart" >> "$GITHUB_ENV"
+        "$flutter_dir/bin/flutter" --version
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    - name: 按锁文件准备 POS 分析依赖
+      working-directory: source/apps/pos
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        "$FLUTTER_BIN" pub get --enforce-lockfile
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    - name: 检查改动 Dart 文件格式及分析结果
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        scope=(--base "$BASE")
+        if [[ "$FULL_SCAN" == true ]]; then
+          scope=(--all)
+        fi
+        python3 dev/quality/check.py "${scope[@]}" --checks dart-format,dart-analyze
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+  admin:
+    needs:
+    - context
+    - scope
+    if: needs.scope.outputs.admin == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      BASE: "${{ needs.scope.outputs.base }}"
+      FULL_SCAN: "${{ needs.scope.outputs.full_scan }}"
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+      NODE_OPTIONS: "--max-old-space-size=4096"
+      LEFTHOOK: '0'
+      SOURCE_EVENT: "${{ inputs.event }}"
+      SOURCE_HEAD: "${{ inputs.head }}"
+      SOURCE_BASE: "${{ inputs.base }}"
+      SOURCE_PR: "${{ inputs.pr }}"
+      CHECK_CONTEXT: "${{ needs.context.outputs.context }}"
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      with:
+        path: automation
+        persist-credentials: false
+    - name: 签发私库限定权限令牌
+      id: auth
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+      with:
+        app-id: "${{ vars.CI_APP_ID }}"
+        private-key: "${{ secrets.CI_APP_PRIVATE_KEY }}"
+        owner: sdbcbt
+        repositories: CloudLinkPOS
+        permission-contents: read
+        permission-pull-requests: read
+    - name: 静默读取并校验私库固定提交
+      working-directory: "."
+      env:
+        SOURCE_TOKEN: "${{ steps.auth.outputs.token }}"
+      run: python3 automation/ci/quality-context.py checkout
+    - name: 使用固定 Python 工具链
+      uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
+      with:
+        python-version: '3.12'
+    - name: 准备后台 CI 环境
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        python3 -B deploy/scripts/prepare-admin-ci-environment.test.py
+        echo "npm_config_store_dir=$RUNNER_TEMP/quality-pnpm-store" >> "$GITHUB_ENV"
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903
+      with:
+        node-version: 22.20.0
+        package-manager-cache: false
+    - name: 使用项目固定 pnpm
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        unset NO_PROXY no_proxy
+        tool_dir="$RUNNER_TEMP/quality-pnpm"
+        npm install --prefix "$tool_dir" --registry=https://registry.npmjs.org --ignore-scripts --no-audit --no-fund --package-lock=false pnpm@10.28.2
+        printf '%s\n' "$tool_dir/node_modules/.bin" >> "$GITHUB_PATH"
+        "$tool_dir/node_modules/.bin/pnpm" --version
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    - name: 安装冻结依赖（沿用后台现有工作区）
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        unset NO_PROXY no_proxy
+        pnpm --dir apps/admin install --frozen-lockfile --registry=https://registry.npmjs.org --fetch-timeout=120000 --fetch-retries=2
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    - name: 检查改动文件及 web-antd 项目类型
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        scope=(--base "$BASE")
+        if [[ "$FULL_SCAN" == true ]]; then
+          scope=(--all)
+        fi
+        python3 dev/quality/check.py "${scope[@]}" --checks admin-lint,admin-typecheck
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+  semgrep:
+    needs:
+    - context
+    - scope
+    if: needs.scope.outputs.semgrep == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BASE: "${{ needs.scope.outputs.base }}"
+      FULL_SCAN: "${{ needs.scope.outputs.full_scan }}"
+      SOURCE_EVENT: "${{ inputs.event }}"
+      SOURCE_HEAD: "${{ inputs.head }}"
+      SOURCE_BASE: "${{ inputs.base }}"
+      SOURCE_PR: "${{ inputs.pr }}"
+      CHECK_CONTEXT: "${{ needs.context.outputs.context }}"
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      with:
+        path: automation
+        persist-credentials: false
+    - name: 签发私库限定权限令牌
+      id: auth
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+      with:
+        app-id: "${{ vars.CI_APP_ID }}"
+        private-key: "${{ secrets.CI_APP_PRIVATE_KEY }}"
+        owner: sdbcbt
+        repositories: CloudLinkPOS
+        permission-contents: read
+        permission-pull-requests: read
+    - name: 静默读取并校验私库固定提交
+      working-directory: "."
+      env:
+        SOURCE_TOKEN: "${{ steps.auth.outputs.token }}"
+      run: python3 automation/ci/quality-context.py checkout
+    - name: 使用固定 Python 工具链
+      uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
+      with:
+        python-version: '3.12'
+    - name: 准备固定 Semgrep
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        semgrep_version=$(python3 -c 'import json; print(json.load(open("dev/quality/tool-versions.json"))["semgrep"])')
+        python3 -m venv --clear --without-pip .tools/quality/semgrep
+        python3 -m pip --python .tools/quality/semgrep/bin/python install --disable-pip-version-check "semgrep==$semgrep_version"
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    - name: 验证规则及正反例
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        python3 dev/quality/semgrep_rules_test.py
+        bash dev/quality/run-semgrep.sh --validate
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    - name: 检查本次变更引入的自定义规则问题
+      run: |
+        export GITHUB_WORKSPACE="$PWD"
+        script=$(mktemp "$RUNNER_TEMP/quality-step.XXXXXX")
+        cat > "$script" <<'CLP_QUALITY_STEP'
+        baseline=(--baseline-commit "$BASE")
+        if [[ "$FULL_SCAN" == true ]]; then
+          baseline=()
+        fi
+        bash dev/quality/run-semgrep.sh "${baseline[@]}" -- apps/backend
+        CLP_QUALITY_STEP
+        if bash --noprofile --norc -eo pipefail "$script" > "$script.log" 2>&1; then
+          echo "本阶段检查通过"
+        else
+          echo "::error::本阶段检查失败，请在私库受控环境复现对应检查。"
+          exit 1
+        fi
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+  report:
+    if: always() && needs.context.result == 'success'
+    needs:
+    - context
+    - scope
+    - backend
+    - pos
+    - admin
+    - semgrep
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      with:
+        path: automation
+        persist-credentials: false
+    - name: 签发私库限定权限令牌
+      id: auth
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+      with:
+        app-id: "${{ vars.CI_APP_ID }}"
+        private-key: "${{ secrets.CI_APP_PRIVATE_KEY }}"
+        owner: sdbcbt
+        repositories: CloudLinkPOS
+        permission-contents: read
+        permission-pull-requests: read
+        permission-checks: write
+    - name: 回写私库对应提交的检查结果
+      env:
+        SOURCE_TOKEN: "${{ steps.auth.outputs.token }}"
+        CHECK_IDS: "${{ needs.context.outputs.checks }}"
+        CHECK_RESULTS: "${{ toJSON(needs) }}"
+      run: python3 automation/ci/quality-context.py report
