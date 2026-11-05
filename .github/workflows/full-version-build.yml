@@ -29,6 +29,7 @@ permissions: {}
 concurrency:
   group: full-version-publication
   cancel-in-progress: false
+  queue: max
 jobs:
   plan:
     if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/main'
@@ -71,7 +72,7 @@ jobs:
         if: inputs.publish_receipts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: source-build-plan
+          name: source-build-plan-${{ github.run_attempt }}
           path: source-build-plan.json
           if-no-files-found: error
           retention-days: 7
@@ -136,7 +137,7 @@ jobs:
       - name: 仅保存版本和摘要收据
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: receipt-${{ matrix.service }}
+          name: receipt-${{ matrix.service }}-attempt-${{ github.run_attempt }}
           path: receipts/*.json
           if-no-files-found: error
           retention-days: 7
@@ -153,14 +154,16 @@ jobs:
         with:
           path: automation
           persist-credentials: false
+      - name: 说明整批重跑要求
+        run: echo '版本收据只接受同一 attempt 的完整批次。失败后请选择 Re-run all jobs；只重跑失败任务不会形成完整计划，将安全拒绝发布。'
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
-          pattern: source-build-plan
+          name: source-build-plan-${{ github.run_attempt }}
           path: input
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         if: needs.build.result == 'success'
         with:
-          pattern: receipt-*
+          pattern: receipt-*-attempt-${{ github.run_attempt }}
           path: input
           merge-multiple: true
       - name: 保存公开构建收据供发布服务读取
