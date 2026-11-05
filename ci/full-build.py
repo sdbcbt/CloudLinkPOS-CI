@@ -165,13 +165,35 @@ def main():
         catalog = module('source_catalog', ROOT / 'deploy/scripts/prepare-service-ci-context.py')
         names = sorted(catalog.SERVICES) + ['admin']
         selected = os.environ.get('SOURCE_SERVICES', 'all')
-        if selected != 'all':
+        before = os.environ.get('SOURCE_BEFORE_SHA', '')
+        if selected == 'changed':
+            if not re.fullmatch('[0-9a-f]{40}', before) or set(before) == {'0'}:
+                raise ValueError('自动发布需要完整推送基线')
+            history = run(['git', 'rev-list', '--first-parent', os.environ['SOURCE_SHA']], ROOT).decode().splitlines()
+            if before not in history:
+                raise ValueError('自动发布基线不属于主线历史')
+            names = catalog.detect_changed_services(ROOT, before, os.environ['SOURCE_SHA'])['services']
+            paths = run(['git', 'diff', '--name-only', '--no-renames', before, os.environ['SOURCE_SHA']], ROOT).decode().splitlines()
+            admin = module('admin_catalog', ROOT / 'deploy/scripts/prepare-admin-ci-context.py')
+            if any(path == entry or path.startswith(entry + '/') for path in paths for entry in admin.ADMIN_SOURCE_PATHS):
+                names.append('admin')
+            names = sorted(set(names))
+        if selected not in ('all', 'changed'):
             requested = selected.split(',')
             if not requested or any(name not in names for name in requested) or len(set(requested)) != len(requested):
                 raise ValueError('服务选择无效')
             names = requested
         with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
             out.write('matrix=' + json.dumps({'include': [{'service': name} for name in names]}) + '\n')
+            out.write('has_services=' + str(bool(names)).lower() + '\n')
+        if os.environ.get('PUBLISH_RECEIPTS') == 'true':
+            content = (ROOT / 'deploy/helm/cloudlinkpos/fleet/rancher-images.yaml').read_text()
+            manifest = json.loads('\n'.join(row for row in content.splitlines() if not row.lstrip().startswith('#')))
+            policy = manifest.get('releasePolicy')
+            if not isinstance(policy, dict) or type(policy.get('grayRequired')) is not bool or type(policy.get('generation')) is not int or policy['generation'] < 1:
+                raise ValueError('自动发布策略未初始化')
+            plan = {'schema': 'cloudlinkpos.public-source-plan/v1', 'sourceSHA': os.environ['SOURCE_SHA'], 'beforeSHA': before, 'expectedServices': names, 'publicationPolicy': policy}
+            Path('source-build-plan.json').write_text(json.dumps(plan, indent=2) + '\n')
     else:
         build(os.environ['BUILD_SERVICE'])
 

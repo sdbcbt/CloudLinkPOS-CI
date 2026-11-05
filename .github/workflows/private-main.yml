@@ -12,111 +12,14 @@ on:
         type: string
 permissions: {}
 jobs:
-  pilot:
-    if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      SOURCE_SHA: ${{ inputs.after }}
-      BEFORE_SHA: ${{ inputs.before }}
-    steps:
-      - name: 检查试点凭据
-        env:
-          APP_ID: ${{ vars.CI_APP_ID }}
-          HAS_KEY: ${{ secrets.CI_APP_PRIVATE_KEY != '' }}
-          USERNAME: ${{ secrets.ACR_USERNAME }}
-          PASSWORD: ${{ secrets.ACR_PASSWORD }}
-        run: |
-          missing=0
-          if [[ "$HAS_KEY" != true ]]; then echo "::error::缺少 Actions Secret CI_APP_PRIVATE_KEY"; missing=1; fi
-          for pair in APP_ID:CI_APP_ID USERNAME:ACR_USERNAME PASSWORD:ACR_PASSWORD; do
-            key=${pair%%:*}
-            if [[ -z "${!key}" ]]; then echo "::error::缺少 ${pair#*:}"; missing=1; fi
-          done
-          exit "$missing"
-      - name: 申请私库只读安装令牌
-        id: source-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
-        with:
-          app-id: ${{ vars.CI_APP_ID }}
-          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
-          owner: sdbcbt
-          repositories: CloudLinkPOS
-          permission-contents: read
-      - name: 只读取私库主线
-        env:
-          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          git init --quiet
-          git remote add origin https://github.com/sdbcbt/CloudLinkPOS.git
-          # 临时认证仅用于本次 fetch，禁止将令牌写入工作区或日志。
-          askpass="$RUNNER_TEMP/source-askpass"
-          trap 'rm -f "$askpass"' EXIT
-          cat > "$askpass" <<'SH'
-          #!/bin/sh
-          case "$1" in
-            *Username*) echo x-access-token ;;
-            *Password*) printf '%s\n' "$SOURCE_TOKEN" ;;
-            *) exit 1 ;;
-          esac
-          SH
-          chmod 700 "$askpass"
-          GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$askpass" git fetch --quiet --no-tags origin refs/heads/main
-          git checkout --quiet --detach FETCH_HEAD
-      - name: 核对提交属于私库主线
-        run: |
-          set -euo pipefail
-          [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ && "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$SOURCE_SHA" != "$BEFORE_SHA" ]]
-          git rev-list --first-parent HEAD > "$RUNNER_TEMP/main-history"
-          grep -Fxq "$SOURCE_SHA" "$RUNNER_TEMP/main-history"
-          git rev-list --first-parent "$SOURCE_SHA" > "$RUNNER_TEMP/push-history"
-          grep -Fxq "$BEFORE_SHA" "$RUNNER_TEMP/push-history"
-          git checkout --quiet --detach "$SOURCE_SHA"
-      - name: 准备编译工具
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
-        with:
-          go-version: '1.26.5'
-          cache: false
-      - name: 按私库推送范围选择试点服务
-        id: scope
-        run: |
-          set -euo pipefail
-          python3 deploy/scripts/prepare-service-ci-context.py --detect-changed-services --base-sha "$BEFORE_SHA" --head-sha "$SOURCE_SHA" --github-output "$RUNNER_TEMP/scope" >/dev/null 2>&1
-          matrix=$(sed -n 's/^matrix=//p' "$RUNNER_TEMP/scope")
-          selected=$(jq -cer '(.include | map(.service) | index("feature-rpc")) != null | tostring' <<< "$matrix")
-          echo "selected=$selected" >> "$GITHUB_OUTPUT"
-          echo "feature-rpc 纳入本次构建：$selected" >> "$GITHUB_STEP_SUMMARY"
-      - name: 编译试点镜像
-        if: steps.scope.outputs.selected == 'true'
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          python3 -m venv "$RUNNER_TEMP/py"
-          "$RUNNER_TEMP/py/bin/pip" -q install 'PyYAML==6.0.2'
-          export PATH="$RUNNER_TEMP/py/bin:$PATH"
-          python3 deploy/scripts/pull-ci-base-image.py --profile alpine --github-output "$RUNNER_TEMP/base" >/dev/null 2>&1
-          base=$(sed -n 's/^base_image=//p' "$RUNNER_TEMP/base")
-          export GITHUB_STEP_SUMMARY=/dev/null
-          python3 deploy/scripts/prepare-service-ci-context.py --service feature-rpc --release-source manual --source-sha "$SOURCE_SHA" --build-number "$GITHUB_RUN_NUMBER" --run-attempt "$GITHUB_RUN_ATTEMPT" --base-image "$base" --output-dir "$RUNNER_TEMP/build" >/dev/null 2>&1
-          docker build --platform linux/amd64 -t local-pilot:build "$RUNNER_TEMP/build/context" >/dev/null 2>&1
-      - name: 推送试点标签并回读摘要
-        if: steps.scope.outputs.selected == 'true'
-        env:
-          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-        run: |
-          set -euo pipefail
-          registry=registry.cn-zhangjiakou.aliyuncs.com
-          image="$registry/sdbcbt/cloudlinkpos"
-          tag="ci-pilot-feature-rpc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          python3 deploy/scripts/publish-acr-image.py --check-private-existing --registry "$registry" --namespace sdbcbt --repository cloudlinkpos >/dev/null 2>&1
-          printf '%s' "$ACR_PASSWORD" | docker login "$registry" -u "$ACR_USERNAME" --password-stdin >/dev/null 2>&1
-          trap 'docker logout "$registry" >/dev/null 2>&1' EXIT
-          docker tag local-pilot:build "$image:$tag"
-          docker push "$image:$tag" > "$RUNNER_TEMP/push" 2>&1
-          digest=$(sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' "$RUNNER_TEMP/push" | tail -1)
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          docker pull "$image:$tag" >/dev/null 2>&1
-          docker inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$image:$tag" | grep -Fxq "$image@$digest"
-          printf '试点镜像 %s\n\n摘要 %s\n' "$tag" "$digest" >> "$GITHUB_STEP_SUMMARY"
+  build:
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/full-version-build.yml
+    with:
+      source_sha: ${{ inputs.after }}
+      before_sha: ${{ inputs.before }}
+      services: changed
+      publish_receipts: true
+    secrets: inherit
