@@ -10,15 +10,46 @@ import importlib.util
 
 ROOT = Path('source').resolve()
 STAGE = '初始化'
+SUBSTAGE = 'none'
 PLATFORMS = ('windows', 'android')
 ANDROID_SIGNER_CERT_SHA256 = 'b118b7c8f118d1c8b1c1115856615ee7ae1076022049a2c71f9190901a7c7d9e'
+
+
+class BuildFailure(RuntimeError):
+    def __init__(self, returncode, category):
+        super().__init__('阶段失败')
+        self.returncode = returncode if type(returncode) is int else 'none'
+        self.category = category if category in ('dependency_resolution', 'r8_missing_classes', 'compilation', 'signing', 'unknown') else 'unknown'
 
 
 def run(args, cwd=ROOT, env=None):
     result = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
-        raise RuntimeError('阶段失败')
+        # 只保留退出码与固定类别，不把命令、私库输出或凭据带入异常。
+        category = classify_failure((result.stdout or b'') + b'\n' + (result.stderr or b''))
+        raise BuildFailure(result.returncode, category)
     return result.stdout
+
+
+def classify_failure(output):
+    output = output.lower()
+    if b'missing classes detected while running r8' in output or b'r8: missing class' in output:
+        return 'r8_missing_classes'
+    if any(marker in output for marker in (
+        b'could not resolve all files for configuration', b'could not resolve all artifacts',
+        b'could not resolve all dependencies', b'could not download ', b'could not get resource ',
+        b'version solving failed', b'pub get failed', b'failed host lookup:',
+    )):
+        return 'dependency_resolution'
+    if any(marker in output for marker in (
+        b'release signing requires ', b'keystore was tampered with', b'failed to read key ',
+    )):
+        return 'signing'
+    if any(marker in output for marker in (
+        b'compilation failed', b'target kernel_snapshot_program failed', b'dart compilation failed',
+    )):
+        return 'compilation'
+    return 'unknown'
 
 
 def module(name, path):
@@ -111,8 +142,11 @@ def installer():
 
 
 def android():
+    global SUBSTAGE
+    SUBSTAGE = 'android.compile'
     flutter('build', 'apk', '--release', '--no-pub', '--build-name', os.environ['POS_VERSION'],
             '--build-number', os.environ['POS_BUILD_NUMBER'], '--dart-define=POS_SOURCE_SHA=' + os.environ['POS_SOURCE_SHA'])
+    SUBSTAGE = 'android.signing_tools'
     tools = Path(os.environ['ANDROID_HOME']) / 'build-tools'
     versions = sorted((path for path in tools.iterdir() if re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', path.name) and (path / 'apksigner').is_file()),
                       key=lambda path: tuple(int(part) for part in path.name.split('.')))
@@ -120,9 +154,11 @@ def android():
         raise ValueError('缺少安卓签名验证工具')
     apk = ROOT / 'apps/pos/build/app/outputs/flutter-apk/app-release.apk'
     signature = run([str(versions[-1] / 'apksigner'), 'verify', '--verbose', '--print-certs', str(apk)]).decode()
+    SUBSTAGE = 'android.signer_fingerprint'
     verify_signer(signature)
     with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
         stream.write('POS_ANDROID_SIGNER_CERT_SHA256=' + ANDROID_SIGNER_CERT_SHA256 + '\n')
+    SUBSTAGE = 'android.version'
     badging = run([str(versions[-1] / 'aapt'), 'dump', 'badging', str(apk)]).decode()
     verifier = module('verify_android_version', ROOT / 'dev/packaging/verify_android_version.py')
     verifier.verify(badging, os.environ['POS_VERSION'], int(os.environ['POS_BUILD_NUMBER']))
@@ -135,6 +171,8 @@ def verify_signer(output):
 
 
 def main(command):
+    global SUBSTAGE
+    SUBSTAGE = 'none'
     if os.environ.get('GITHUB_REPOSITORY') != 'sdbcbt/CloudLinkPOS-CI' or os.environ.get('GITHUB_REF') != 'refs/heads/main':
         raise ValueError('仅允许公开 CI 主线执行正式构建')
     if command == 'checkout':
@@ -144,8 +182,11 @@ def main(command):
     elif command == 'prepare':
         prepare()
     elif command == 'test':
+        SUBSTAGE = 'test.python_packaging'
         run([sys.executable, '-m', 'unittest', 'discover', '-s', 'dev/packaging', '-p', 'test_*.py'])
+        SUBSTAGE = 'test.flutter_pub_get'
         flutter('pub', 'get', '--enforce-lockfile')
+        SUBSTAGE = 'test.flutter_cases'
         flutter('test', '--no-pub', 'test/hardware/keyboard_service_test.dart', 'test/services/device_information_service_test.dart')
     elif command == 'signing':
         required = ('ANDROID_KEYSTORE_BASE64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_PASSWORD', 'ANDROID_KEY_ALIAS')
@@ -179,7 +220,12 @@ if __name__ == '__main__':
         STAGE = sys.argv[1]
         main(STAGE)
         print('本阶段完成：' + STAGE)
-    except Exception:
+    except Exception as error:
         # 私库构建日志、源码路径、堆栈与异常原文不进入公开日志。
-        print('::error::收银客户端构建停止于：' + STAGE + '；请在私库受控环境复现。', file=sys.stderr)
+        code = error.returncode if isinstance(error, BuildFailure) else 'none'
+        category = error.category if isinstance(error, BuildFailure) else 'unknown'
+        if SUBSTAGE in ('android.signing_tools', 'android.signer_fingerprint'):
+            category = 'signing'
+        print('::error::收银客户端构建停止于：' + STAGE + '；子阶段：' + SUBSTAGE +
+              '；exit_code=' + str(code) + '；category=' + category + '；请在私库受控环境复现。', file=sys.stderr)
         sys.exit(1)
