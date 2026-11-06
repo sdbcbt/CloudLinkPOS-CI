@@ -25,3 +25,7 @@ Release 标签指向公开 CI 的构建配置提交；安装包版本、附件�
 Android 需要在本公开仓库配置固定正式签名的 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_PASSWORD`、`ANDROID_KEY_ALIAS`。缺失时该平台明确失败，不生成临时签名或使用 debug 签名；Windows 独立继续。客户端使用单独的工作流运行，避免 Android 签名失败改变后端镜像收据的最终状态。构建成功不代表真机 UI、OTA 或外设验收。
 
 离线边界检查：安装固定 `PyYAML==6.0.2` 后分别运行 `python3 ci/pos-build_test.py` 与 `python3 ci/report-pos-failure_test.py`。测试覆盖触发范围、main 限制、版本元数据白名单、私库日志隔离、失败详情脱敏及工作流权限。
+
+### PR 质量检查的基准前移
+
+私库 PR 检查绑定通知中的 head 提交：head 不同即拒绝，新推送会重新通知。main 前移（包括生产发布 bot 只改清单的提交）不再使整组检查失败：`ci/quality-context.py` 采用 PR 当前 base，并核对它由通知 base 前移而来、仍在 main 首父历史中；各作业按固定 base/head 在执行器本地生成合并提交（固定作者与时间，结果一致），不依赖 GitHub 异步计算的 `refs/pull/N/merge`。与当前 main 冲突时拒绝检查，需先合并 main。离线测试：`python3 ci/quality-context_test.py`。

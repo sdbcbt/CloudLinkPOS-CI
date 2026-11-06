@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import time
 import urllib.request
 
 REPO = "sdbcbt/CloudLinkPOS"
@@ -40,21 +39,33 @@ def context():
         if not re.fullmatch("[1-9][0-9]*", number):
             raise ValueError("PR 编号无效")
         pr = api(f"/repos/{REPO}/pulls/{number}")
-        # GitHub 更新 PR 后可能尚未计算合并状态，有限重读相同事件。
-        for _ in range(3):
-            if pr["mergeable"] is not None:
-                break
-            time.sleep(2)
-            pr = api(f"/repos/{REPO}/pulls/{number}")
         if pr["head"]["repo"]["full_name"] != REPO or pr["base"]["ref"] != "main":
             raise ValueError("PR 来源不在允许范围")
-        if pr["head"]["sha"] != head or pr["base"]["sha"] != base:
+        if pr["state"] != "open":
+            raise ValueError("PR 已关闭")
+        # head 必须与通知完全一致；变化时由新推送的通知重新检查。
+        if pr["head"]["sha"] != head:
             raise ValueError("PR 已更新，请等待最新通知")
-        if pr["state"] != "open" or pr["mergeable"] is not True:
-            raise ValueError("PR 已关闭、存在冲突或合并状态尚未就绪")
-        ref = f"refs/pull/{number}/merge"
-        commit = pr["merge_commit_sha"]
-        parents = [base, head]
+        # main 前移（包括发布 bot 的清单提交）不改变 PR 内容：采用当前 base，
+        # 但它必须由通知 base 前移而来且仍在主线上，不能改写或回退主线。
+        current = pr["base"]["sha"]
+        if not re.fullmatch("[0-9a-f]{40}", current):
+            raise ValueError("PR 基准提交无效")
+        if current != base:
+            moved = api(f"/repos/{REPO}/compare/{base}...{current}")
+            if moved["status"] != "ahead":
+                raise ValueError("PR 基准不是由通知基准前移而来")
+        on_main = api(f"/repos/{REPO}/compare/{current}...main")
+        if on_main["status"] not in ("ahead", "identical"):
+            raise ValueError("PR 基准不在当前主线历史中")
+        # 不依赖 GitHub 异步计算的 refs/pull/N/merge：各作业按固定 base/head 在本地生成相同的合并结果。
+        return {
+            "head": head,
+            "base": current,
+            "ref": f"refs/pull/{number}/head",
+            "commit": head,
+            "parents": [current, head],
+        }
     elif os.environ["SOURCE_EVENT"] == "push":
         ref = "refs/heads/main"
         commit = head
@@ -86,6 +97,23 @@ def initialize():
         output.write("checks=" + json.dumps(checks, separators=(",", ":")) + "\n")
 
 
+def local_merge(root, base, head):
+    """在 base 上本地合并 head：固定作者与时间，使各作业得到相同提交；冲突时拒绝检查。"""
+    def git(*args, env=None):
+        return subprocess.run(["git", "-C", str(root), *args], check=False, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if git("checkout", "--quiet", "--detach", base).returncode != 0:
+        raise ValueError("无法检出 PR 基准")
+    env = dict(os.environ, GIT_AUTHOR_DATE="1970-01-01T00:00:00Z", GIT_COMMITTER_DATE="1970-01-01T00:00:00Z")
+    merged = git("-c", "user.name=CloudLinkPOS CI", "-c", "user.email=ci@cloudlinkpos.invalid",
+                 "merge", "--no-ff", "--no-edit", "--quiet", head, env=env)
+    if merged.returncode != 0:
+        raise ValueError("PR 与当前主线存在冲突，请先合并 main")
+    parents = git("show", "-s", "--format=%P", "HEAD").stdout.decode().split()
+    if parents != [base, head]:
+        raise ValueError("合并提交与通知范围不匹配")
+
+
 def checkout():
     ctx = json.loads(os.environ["CHECK_CONTEXT"])
     root = Path("source")
@@ -100,17 +128,20 @@ def checkout():
         "fetch", "--quiet", "--no-tags", "origin", ctx["ref"])
     tip = git("rev-parse", "FETCH_HEAD", capture=True).stdout.decode().strip()
     if ctx["parents"]:
-        if tip != ctx["commit"]:
+        if tip != ctx["head"]:
             raise ValueError("PR 已更新，禁止检查其他提交")
+        git("-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + credential,
+            "fetch", "--quiet", "--no-tags", "origin", "refs/heads/main")
+        main = git("rev-parse", "FETCH_HEAD", capture=True).stdout.decode().strip()
+        history = git("rev-list", "--first-parent", main, capture=True).stdout.decode().splitlines()
+        if ctx["base"] not in history:
+            raise ValueError("PR 基准不在主线首父历史中")
+        local_merge(root, ctx["base"], ctx["head"])
     else:
         history = git("rev-list", "--first-parent", tip, capture=True).stdout.decode().splitlines()
         if ctx["commit"] not in history:
             raise ValueError("提交不在主线首父历史中")
-    git("checkout", "--quiet", "--detach", ctx["commit"])
-    if ctx["parents"]:
-        actual = git("show", "-s", "--format=%P", "HEAD", capture=True).stdout.decode().split()
-        if actual != ctx["parents"]:
-            raise ValueError("合并提交与通知范围不匹配")
+        git("checkout", "--quiet", "--detach", ctx["commit"])
     git("merge-base", "--is-ancestor", ctx["base"], "HEAD")
 
 
