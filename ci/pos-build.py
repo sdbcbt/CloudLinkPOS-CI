@@ -184,8 +184,12 @@ def android():
 
 
 def verify_signer(output):
-    fingerprints = re.findall(r'^Signer #[0-9]+ certificate SHA-256 digest: ([0-9a-fA-F]{64})\s*$', output, re.M)
-    if [value.lower() for value in fingerprints] != [ANDROID_SIGNER_CERT_SHA256]:
+    # 新版 SDK 将单个 V2 签名者标为 V2 Signer，仍严格核对数量与同一正式证书。
+    counts = re.findall(r'^Number of signers: ([0-9]+)[ \t]*$', output, re.M)
+    certificates = [line for line in output.splitlines() if 'certificate SHA-256 digest:' in line]
+    fingerprint = re.fullmatch(r'(?:Signer #1|V2 Signer:) certificate SHA-256 digest: ([0-9a-fA-F]{64})',
+                               certificates[0]) if len(certificates) == 1 else None
+    if counts != ['1'] or fingerprint is None or fingerprint.group(1).lower() != ANDROID_SIGNER_CERT_SHA256:
         raise ValueError('APK 签名证书与固定正式证书不一致')
 
 

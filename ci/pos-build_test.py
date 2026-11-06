@@ -187,7 +187,7 @@ class DiagnosticTests(unittest.TestCase):
             invoke.assert_not_called()
 
     def test_android_signature_fingerprint_and_version_failures_stop_in_their_subphases(self):
-        signature = ('Signer #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n').encode()
+        signature = ('Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n').encode()
         cases = [
             ('android.signing_tools', [build.BuildFailure(21, 'unknown')], 1),
             ('android.signer_fingerprint', [b'private invalid certificate'], 1),
@@ -238,7 +238,7 @@ with patch.object(subprocess, 'run', return_value=failure):
         code = """
 import runpy, subprocess, sys
 from unittest.mock import patch
-signature = b'Signer #1 certificate SHA-256 digest: b118b7c8f118d1c8b1c1115856615ee7ae1076022049a2c71f9190901a7c7d9e\\n'
+signature = b'Number of signers: 1\\nSigner #1 certificate SHA-256 digest: b118b7c8f118d1c8b1c1115856615ee7ae1076022049a2c71f9190901a7c7d9e\\n'
 results = [subprocess.CompletedProcess([], 0, stdout=value, stderr=b'private output')
     for value in (b'', signature, b'private badging')]
 sys.argv = [sys.argv[1], 'android']
@@ -267,10 +267,16 @@ with patch.object(subprocess, 'run', side_effect=results):
 
 class SigningTests(unittest.TestCase):
     def test_only_the_fixed_cloudlinkpos_release_certificate_is_accepted(self):
-        fixed = 'Signer #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n'
+        fixed = 'Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n'
         build.verify_signer(fixed)
+        modern = fixed.replace('Signer #1 certificate', 'V2 Signer: certificate')
+        build.verify_signer(modern)
         for output in ['', 'Signer #1 certificate SHA-256 digest: ' + '0' * 64,
-                       fixed + 'Signer #2 certificate SHA-256 digest: ' + 'f' * 64]:
+                       fixed + 'Signer #2 certificate SHA-256 digest: ' + 'f' * 64,
+                       modern.replace('Number of signers: 1', 'Number of signers: 2'),
+                       modern.replace(build.ANDROID_SIGNER_CERT_SHA256, '0' * 64),
+                       modern.replace('V2 Signer:', 'Unsupported Signer:'),
+                       modern + modern, modern.split('\n', 1)[1]]:
             with self.subTest(output=output), self.assertRaisesRegex(ValueError, '固定正式证书'):
                 build.verify_signer(output)
 
