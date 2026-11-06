@@ -1,0 +1,17 @@
+{
+  "sourceSHA": "7fced766030598fecd3d7d597d9c3415d78b2f92",
+  "beforeSHA": "f5513407c666efdc7748999a922708467cc528cd",
+  "expectedServices": [],
+  "publicationPolicy": {
+    "grayRequired": false,
+    "generation": 3
+  },
+  "schema": "cloudlinkpos.public-source-build/v1",
+  "sourceRepository": "sdbcbt/CloudLinkPOS",
+  "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+  "runID": "42201574359",
+  "attempt": "1",
+  "workflowSHA": "1c06afe34fad6154040bad919edf1b2ad23383be",
+  "workflowPath": ".github/workflows/private-main.yml",
+  "receipts": []
+}
