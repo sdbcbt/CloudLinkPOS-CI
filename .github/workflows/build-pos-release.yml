@@ -1,0 +1,158 @@
+name: 收银客户端永久版本构建
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 已合并私库 main 的完整源码提交
+        required: true
+        type: string
+      platform:
+        description: 构建平台
+        type: choice
+        options: [all, windows, android, changed]
+        default: all
+      before_sha:
+        description: 自动通知的私库推送前提交，手动选 all/windows/android 时留空
+        default: ''
+        type: string
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      before_sha:
+        default: ''
+        type: string
+      platform:
+        default: changed
+        type: string
+permissions: {}
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: pos-permanent-releases
+  cancel-in-progress: false
+  queue: max
+jobs:
+  plan:
+    if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_platforms: ${{ steps.plan.outputs.has_platforms }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: automation
+          persist-credentials: false
+      - name: 签发私库只读令牌
+        id: auth
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: sdbcbt
+          repositories: CloudLinkPOS
+          permission-contents: read
+      - name: 静默读取已合并固定源码
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_TOKEN: ${{ steps.auth.outputs.token }}
+        run: python3 automation/ci/pos-build.py checkout
+      - name: 检测收银端改动并固定版本
+        id: plan
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_BEFORE_SHA: ${{ inputs.before_sha }}
+          BUILD_PLATFORM: ${{ inputs.platform }}
+        run: python3 automation/ci/pos-build.py plan
+  build:
+    needs: plan
+    if: needs.plan.outputs.has_platforms == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.platform == 'windows' && 'windows-2022' || 'ubuntu-24.04' }}
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      POS_RELEASE_PLAN: ${{ needs.plan.outputs.plan }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      RELEASE_PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
+        with:
+          python-version: '3.12'
+      - name: 签发私库只读令牌
+        id: auth
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: sdbcbt
+          repositories: CloudLinkPOS
+          permission-contents: read
+      - name: 静默读取已合并固定源码
+        env:
+          SOURCE_TOKEN: ${{ steps.auth.outputs.token }}
+        run: python automation/ci/pos-build.py checkout
+      - name: 核对统一版本参数
+        run: python automation/ci/pos-build.py prepare
+      - name: 准备固定安卓正式签名
+        if: matrix.platform == 'android'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: python3 automation/ci/pos-build.py signing
+      - name: 下载固定 Windows Flutter SDK
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'flutter.zip'
+          Invoke-WebRequest 'https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_3.44.0-stable.zip' -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne '88da00194893bf9543fc47c0bf31e6de978d49ffdb9c2f6e30c46dde0116c768') { throw 'Flutter SDK 摘要不匹配' }
+          Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP
+          "$env:RUNNER_TEMP/flutter/bin" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+      - name: 准备安卓固定工具链
+        if: matrix.platform == 'android'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$JAVA_HOME_17_X64"
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
+          curl --fail --location --retry 3 https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.44.0-stable.tar.xz -o "$RUNNER_TEMP/flutter.tar.xz"
+          echo "e1ec95e6c550458a34de93580cb85dac24da0e9bedb9bb42811f050ac5a0c7d5  $RUNNER_TEMP/flutter.tar.xz" | sha256sum --check
+          tar -xf "$RUNNER_TEMP/flutter.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+      - name: 静默运行打包边界与软件版本测试
+        run: python automation/ci/pos-build.py test
+      - name: 静默构建 Windows 安装包和便携包
+        if: matrix.platform == 'windows'
+        run: |
+          python automation/ci/pos-build.py windows
+          python automation/ci/pos-build.py installer
+      - name: 静默构建并核验固定正式签名安卓安装包
+        if: matrix.platform == 'android'
+        run: python3 automation/ci/pos-build.py android
+      - name: 生成源码版本清单和 SHA-256
+        run: python automation/ci/pos-build.py package
+      - name: 核验并发布公开永久下载附件
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python automation/ci/pos-build.py publish
+      - name: 清理安卓签名临时文件
+        if: always() && matrix.platform == 'android'
+        run: python3 automation/ci/pos-build.py cleanup
