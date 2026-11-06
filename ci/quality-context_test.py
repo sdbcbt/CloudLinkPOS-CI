@@ -47,6 +47,7 @@ class ContextTest(unittest.TestCase):
             value = quality.context()
         self.assertEqual(value["base"], current, "main 前移后按当前基准检查")
         self.assertEqual(value["parents"], [current, self.head])
+        self.assertEqual(value["notifiedBase"], self.base, "保留通知 base 供首父历史校验")
 
     def test_rejects_rewritten_or_off_main_base(self):
         current = "e" * 40
@@ -86,6 +87,26 @@ class ContextTest(unittest.TestCase):
         with patch.dict(os.environ, env), patch.object(quality, "api") as api:
             quality.report()
         self.assertTrue(all(call.args[1]["conclusion"] == "failure" for call in api.call_args_list))
+
+
+class MainlineTest(unittest.TestCase):
+    def test_accepts_forward_move_on_first_parent_chain(self):
+        quality.check_mainline(["c", "b", "a"], "c", "a")
+        quality.check_mainline(["c", "b", "a"], "b", "b")
+
+    def test_rejects_side_branch_or_backward_base(self):
+        with self.assertRaises(ValueError):
+            quality.check_mainline(["c", "m", "a"], "c", "side")
+        with self.assertRaises(ValueError):
+            quality.check_mainline(["c", "b", "a"], "a", "c")
+        with self.assertRaises(ValueError):
+            quality.check_mainline(["c", "b", "a"], "x", "a")
+
+
+class WorkflowScopeTest(unittest.TestCase):
+    def test_pr_scope_uses_verified_current_base(self):
+        workflow = (Path(__file__).parents[1] / ".github/workflows/private-quality.yml").read_text()
+        self.assertIn('PR_BASE: "${{ fromJSON(needs.context.outputs.context).base }}"', workflow)
 
 
 class LocalMergeTest(unittest.TestCase):

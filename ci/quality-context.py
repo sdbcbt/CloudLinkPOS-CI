@@ -62,6 +62,7 @@ def context():
         return {
             "head": head,
             "base": current,
+            "notifiedBase": base,
             "ref": f"refs/pull/{number}/head",
             "commit": head,
             "parents": [current, head],
@@ -95,6 +96,15 @@ def initialize():
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
         output.write("context=" + json.dumps(ctx, separators=(",", ":")) + "\n")
         output.write("checks=" + json.dumps(checks, separators=(",", ":")) + "\n")
+
+
+def check_mainline(history, base, notified):
+    """通知 base 与当前 base 都须在 main 首父链上（最新在前），且当前 base 不早于通知 base；侧分支祖先不算主线前移。"""
+    for value in (base, notified):
+        if value not in history:
+            raise ValueError("PR 基准不在主线首父历史中")
+    if history.index(base) > history.index(notified):
+        raise ValueError("PR 基准不是由通知基准前移而来")
 
 
 def local_merge(root, base, head):
@@ -134,8 +144,7 @@ def checkout():
             "fetch", "--quiet", "--no-tags", "origin", "refs/heads/main")
         main = git("rev-parse", "FETCH_HEAD", capture=True).stdout.decode().strip()
         history = git("rev-list", "--first-parent", main, capture=True).stdout.decode().splitlines()
-        if ctx["base"] not in history:
-            raise ValueError("PR 基准不在主线首父历史中")
+        check_mainline(history, ctx["base"], ctx.get("notifiedBase", ctx["base"]))
         local_merge(root, ctx["base"], ctx["head"])
     else:
         history = git("rev-list", "--first-parent", tip, capture=True).stdout.decode().splitlines()
