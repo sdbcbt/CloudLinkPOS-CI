@@ -68,12 +68,33 @@ class PrivacyTests(unittest.TestCase):
             private = root / 'source/dev/packaging'
             private.mkdir(parents=True)
             (private / 'test_private.py').write_text("print('synthetic private source')\nraise RuntimeError('synthetic secret')\n")
-            env = dict(os.environ, GITHUB_REPOSITORY='sdbcbt/CloudLinkPOS-CI', GITHUB_REF='refs/heads/main')
+            env = dict(os.environ, GITHUB_REPOSITORY='sdbcbt/CloudLinkPOS-CI', GITHUB_REF='refs/heads/main', RUNNER_TEMP=folder)
             result = subprocess.run([os.sys.executable, str(script), 'test'], cwd=root, env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn('synthetic private source', result.stdout + result.stderr)
             self.assertNotIn('synthetic secret', result.stdout + result.stderr)
             self.assertIn('收银客户端构建停止于：test', result.stderr)
+            saved = (root / 'cloudlinkpos-pos-first-failure.log').read_text(encoding='utf-8')
+            self.assertIn('synthetic private source', saved)
+            self.assertIn('synthetic secret', saved)
+
+    def test_first_failure_is_private_and_cleanup_failure_does_not_overwrite_it(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {'RUNNER_TEMP': folder}):
+            for stdout, stderr in [(b'first stdout', b'first stderr'), (b'cleanup stdout', b'cleanup stderr')]:
+                result = subprocess.CompletedProcess(['synthetic'], 7, stdout=stdout, stderr=stderr)
+                with patch.object(build.subprocess, 'run', return_value=result), self.assertRaises(build.BuildFailure):
+                    build.run(['synthetic'])
+            path = Path(folder) / 'cloudlinkpos-pos-first-failure.log'
+            self.assertEqual(path.read_bytes(), b'stdout:\nfirst stdout\nstderr:\nfirst stderr')
+            if os.name != 'nt':
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_failure_log_write_error_does_not_replace_original_failure(self):
+        result = subprocess.CompletedProcess(['synthetic'], 9, stdout=b'private', stderr=b'private')
+        with patch.dict(os.environ, {'RUNNER_TEMP': '/synthetic/missing-directory'}), \
+                patch.object(build.subprocess, 'run', return_value=result), self.assertRaises(build.BuildFailure) as error:
+            build.run(['synthetic'])
+        self.assertEqual(error.exception.returncode, 9)
 
     def test_windows_tools_always_run_with_captured_output(self):
         result = subprocess.CompletedProcess(['synthetic'], 0, stdout=b'captured', stderr=b'captured')
@@ -179,7 +200,7 @@ class DiagnosticTests(unittest.TestCase):
                 tools.mkdir(parents=True)
                 (tools / 'apksigner').touch()
                 env = {'POS_VERSION': '1.0.1', 'POS_BUILD_NUMBER': '1', 'POS_SOURCE_SHA': 'a' * 40,
-                       'ANDROID_HOME': folder, 'GITHUB_ENV': str(root / 'env')}
+                       'ANDROID_HOME': folder, 'GITHUB_ENV': str(root / 'env'), 'RUNNER_TEMP': folder}
                 with patch.dict(os.environ, env), patch.object(build, 'flutter'), \
                         patch.object(build, 'run', side_effect=results) as invoke, patch.object(build, 'module') as load:
                     with self.assertRaises((build.BuildFailure, ValueError)):
@@ -187,6 +208,9 @@ class DiagnosticTests(unittest.TestCase):
                     self.assertEqual(build.SUBSTAGE, stage)
                     self.assertEqual(invoke.call_count, count)
                     load.assert_not_called()
+                    if stage == 'android.signer_fingerprint':
+                        saved = (root / 'cloudlinkpos-pos-first-failure.log').read_bytes()
+                        self.assertIn(b'private invalid certificate', saved)
 
     def test_actual_entry_reports_only_safe_compile_metadata(self):
         script = Path(__file__).with_name('pos-build.py').resolve()
@@ -272,11 +296,23 @@ class WorkflowTests(unittest.TestCase):
                 if 'create-github-app-token' in uses:
                     self.assertEqual(step['with']['permission-contents'], 'read')
                     self.assertEqual(step['with']['repositories'], 'CloudLinkPOS')
+                    if step.get('id') == 'failure_auth':
+                        self.assertEqual(step['with']['permission-checks'], 'write')
+                        self.assertEqual(step['if'], "failure() && steps.failure_log.outputs.exists == 'true'")
+                        self.assertEqual(set(step['with']), {'app-id', 'private-key', 'owner', 'repositories', 'permission-contents', 'permission-checks'})
+                    else:
+                        self.assertNotIn('permission-checks', step['with'])
                 if 'actions/checkout' in uses:
                     self.assertEqual(step['with']['path'], 'automation')
                     self.assertIs(step['with']['persist-credentials'], False)
                 if step.get('env', {}).get('GITHUB_TOKEN'):
-                    self.assertIn('pos-build.py publish', step['run'])
+                    self.assertIn(step['run'], ['python automation/ci/pos-build.py publish', 'python automation/ci/report-pos-failure.py'])
+        report = jobs['build']['steps'][-1]
+        self.assertEqual(report['run'], 'python automation/ci/report-pos-failure.py')
+        self.assertEqual(report['if'], "failure() && steps.failure_log.outputs.exists == 'true' && steps.failure_auth.outcome == 'success'")
+        self.assertEqual(report['env']['CHECKS_TOKEN'], '${{ steps.failure_auth.outputs.token }}')
+        for key in ['ANDROID_KEYSTORE_BASE64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_PASSWORD', 'ANDROID_KEY_ALIAS']:
+            self.assertEqual(report['env'][key], '${{ secrets.' + key + ' }}')
         main = yaml.safe_load((root / '.github/workflows/private-main.yml').read_text())
         self.assertNotIn('pos', main['jobs'])
         self.assertEqual(main['jobs']['build']['uses'], './.github/workflows/full-version-build.yml')

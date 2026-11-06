@@ -1,10 +1,10 @@
 name: 收银构建边界测试
 on:
   pull_request:
-    paths: ['ci/pos-build*', '.github/workflows/build-pos-release.yml', '.github/workflows/pos-automation-tests.yml']
+    paths: ['ci/pos-build*', 'ci/report-pos-failure*', '.github/workflows/build-pos-release.yml', '.github/workflows/pos-automation-tests.yml']
   push:
     branches: [main]
-    paths: ['ci/pos-build*', '.github/workflows/build-pos-release.yml', '.github/workflows/pos-automation-tests.yml']
+    paths: ['ci/pos-build*', 'ci/report-pos-failure*', '.github/workflows/build-pos-release.yml', '.github/workflows/pos-automation-tests.yml']
 permissions:
   contents: read
 jobs:
@@ -23,4 +23,6 @@ jobs:
       - name: 准备固定 YAML 解析器
         run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
       - name: 验证触发范围、签名和私库日志隔离
-        run: python3 ci/pos-build_test.py
+        run: |
+          python3 ci/pos-build_test.py
+          python3 ci/report-pos-failure_test.py
