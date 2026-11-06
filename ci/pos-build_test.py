@@ -83,6 +83,45 @@ class PrivacyTests(unittest.TestCase):
         self.assertEqual(invoke.call_args.kwargs['stderr'], subprocess.PIPE)
 
 
+class EncodingTests(unittest.TestCase):
+    def successful_checkout(self, extra_env):
+        script = Path(__file__).with_name('pos-build.py').resolve()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            checkout = root / 'automation/ci/full-build.py'
+            checkout.parent.mkdir(parents=True)
+            # 假读取只留下完成标记，覆盖真实入口的成功输出，不访问私库或令牌。
+            checkout.write_text(
+                "from pathlib import Path\n\ndef checkout():\n"
+                "    Path('checkout-completed').write_text('ok', encoding='ascii')\n",
+                encoding='utf-8',
+            )
+            env = dict(os.environ, GITHUB_REPOSITORY='sdbcbt/CloudLinkPOS-CI', GITHUB_REF='refs/heads/main',
+                       PYTHONUTF8='0', PYTHONIOENCODING='cp1252')
+            env.pop('SOURCE_TOKEN', None)
+            env.update(extra_env)
+            result = subprocess.run([os.sys.executable, str(script), 'checkout'], cwd=root, env=env, capture_output=True)
+            self.assertEqual((root / 'checkout-completed').read_text(encoding='ascii'), 'ok')
+            return result
+
+    def test_legacy_windows_stdout_can_misreport_successful_checkout_as_failure(self):
+        result = self.successful_checkout({})
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, b'')
+        self.assertIn(b'::error::\\u6536\\u94f6', result.stderr)
+        self.assertIn(b'checkout', result.stderr)
+        self.assertNotIn(b'Traceback', result.stderr)
+
+    def test_workflow_utf8_environment_keeps_successful_checkout_successful(self):
+        import yaml
+        workflow = Path(__file__).resolve().parents[1] / '.github/workflows/build-pos-release.yml'
+        environment = yaml.safe_load(workflow.read_text(encoding='utf-8'))['env']
+        result = self.successful_checkout(environment)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.decode('utf-8').splitlines(), ['本阶段完成：checkout'])
+        self.assertEqual(result.stderr, b'')
+
+
 class SigningTests(unittest.TestCase):
     def test_only_the_fixed_cloudlinkpos_release_certificate_is_accepted(self):
         fixed = 'Signer #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n'
@@ -99,6 +138,8 @@ class WorkflowTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         workflow = yaml.safe_load((root / '.github/workflows/build-pos-release.yml').read_text())
         self.assertFalse(workflow['permissions'])
+        self.assertEqual(workflow['env']['PYTHONUTF8'], '1')
+        self.assertEqual(workflow['env']['PYTHONIOENCODING'], 'utf-8')
         self.assertEqual(workflow['defaults']['run']['shell'], 'bash')
         self.assertFalse(workflow['concurrency']['cancel-in-progress'])
         self.assertEqual(workflow['concurrency']['queue'], 'max')

@@ -27,6 +27,9 @@ on:
         default: changed
         type: string
 permissions: {}
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
 defaults:
   run:
     shell: bash
