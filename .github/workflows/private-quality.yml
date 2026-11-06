@@ -91,7 +91,8 @@ jobs:
       id: scope
       env:
         EVENT_NAME: "${{ inputs.event == 'pr' && 'pull_request' || 'push' }}"
-        PR_BASE: "${{ inputs.base }}"
+        # PR 检查以 context 已验证的当前 base 计算改动范围，与本地合并基准一致，避免新旧基准差异相互抵消。
+        PR_BASE: "${{ fromJSON(needs.context.outputs.context).base }}"
         PUSH_BEFORE: "${{ inputs.base }}"
         PYTHONDONTWRITEBYTECODE: '1'
       run: |
