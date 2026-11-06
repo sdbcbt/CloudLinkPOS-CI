@@ -122,6 +122,125 @@ class EncodingTests(unittest.TestCase):
         self.assertEqual(result.stderr, b'')
 
 
+class DiagnosticTests(unittest.TestCase):
+    def test_error_categories_are_fixed_and_narrow_features_take_priority(self):
+        cases = [
+            (b'Missing classes detected while running R8\nCompilation failed', 'r8_missing_classes'),
+            (b'R8: Missing class private.Class\nCould not download secret', 'r8_missing_classes'),
+            (b'Could not resolve all files for configuration /private/path\nCompilation failed', 'dependency_resolution'),
+            (b'Version solving failed\nprivate package', 'dependency_resolution'),
+            (b'Target kernel_snapshot_program failed\nprivate.dart:10', 'compilation'),
+            (b'Release signing requires private/key.properties', 'signing'),
+            (b'\xff\xfe secret=never-public\nunknown failure', 'unknown'),
+        ]
+        for output, category in cases:
+            with self.subTest(category=category):
+                self.assertEqual(build.classify_failure(output), category)
+        error = build.BuildFailure('private/path', 'secret=never-public')
+        self.assertEqual(error.returncode, 'none')
+        self.assertEqual(error.category, 'unknown')
+
+    def test_test_subphases_stop_at_the_failed_command(self):
+        env = {'GITHUB_REPOSITORY': 'sdbcbt/CloudLinkPOS-CI', 'GITHUB_REF': 'refs/heads/main'}
+        for index, stage in enumerate(['test.python_packaging', 'test.flutter_pub_get', 'test.flutter_cases']):
+            with self.subTest(stage=stage), patch.dict(os.environ, env), \
+                    patch.object(build, 'run', side_effect=[b''] * index + [build.BuildFailure(17, 'unknown')]) as invoke:
+                with self.assertRaises(build.BuildFailure):
+                    build.main('test')
+                self.assertEqual(build.SUBSTAGE, stage)
+                self.assertEqual(invoke.call_count, index + 1)
+
+    def test_android_compile_and_missing_tools_have_distinct_subphases(self):
+        env = {'POS_VERSION': '1.0.1', 'POS_BUILD_NUMBER': '1', 'POS_SOURCE_SHA': 'a' * 40}
+        with patch.dict(os.environ, env), patch.object(build, 'flutter', side_effect=build.BuildFailure(19, 'compilation')), \
+                patch.object(build, 'run') as invoke, self.assertRaises(build.BuildFailure):
+            build.android()
+        self.assertEqual(build.SUBSTAGE, 'android.compile')
+        invoke.assert_not_called()
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / 'build-tools').mkdir()
+            with patch.dict(os.environ, dict(env, ANDROID_HOME=folder)), patch.object(build, 'flutter'), \
+                    patch.object(build, 'run') as invoke, self.assertRaises(ValueError):
+                build.android()
+            self.assertEqual(build.SUBSTAGE, 'android.signing_tools')
+            invoke.assert_not_called()
+
+    def test_android_signature_fingerprint_and_version_failures_stop_in_their_subphases(self):
+        signature = ('Signer #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n').encode()
+        cases = [
+            ('android.signing_tools', [build.BuildFailure(21, 'unknown')], 1),
+            ('android.signer_fingerprint', [b'private invalid certificate'], 1),
+            ('android.version', [signature, build.BuildFailure(23, 'unknown')], 2),
+        ]
+        for stage, results, count in cases:
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                tools = root / 'build-tools/35.0.0'
+                tools.mkdir(parents=True)
+                (tools / 'apksigner').touch()
+                env = {'POS_VERSION': '1.0.1', 'POS_BUILD_NUMBER': '1', 'POS_SOURCE_SHA': 'a' * 40,
+                       'ANDROID_HOME': folder, 'GITHUB_ENV': str(root / 'env')}
+                with patch.dict(os.environ, env), patch.object(build, 'flutter'), \
+                        patch.object(build, 'run', side_effect=results) as invoke, patch.object(build, 'module') as load:
+                    with self.assertRaises((build.BuildFailure, ValueError)):
+                        build.android()
+                    self.assertEqual(build.SUBSTAGE, stage)
+                    self.assertEqual(invoke.call_count, count)
+                    load.assert_not_called()
+
+    def test_actual_entry_reports_only_safe_compile_metadata(self):
+        script = Path(__file__).with_name('pos-build.py').resolve()
+        code = """
+import runpy, subprocess, sys
+from unittest.mock import patch
+failure = subprocess.CompletedProcess(['private argument'], 37, stdout=b'private stdout',
+    stderr=b'Missing classes detected while running R8\\n/private/source.dart secret=never-public')
+sys.argv = [sys.argv[1], 'android']
+with patch.object(subprocess, 'run', return_value=failure):
+    runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+        env = dict(os.environ, GITHUB_REPOSITORY='sdbcbt/CloudLinkPOS-CI', GITHUB_REF='refs/heads/main',
+                   POS_VERSION='1.0.1', POS_BUILD_NUMBER='1', POS_SOURCE_SHA='a' * 40, PYTHONIOENCODING='utf-8')
+        env.pop('SOURCE_TOKEN', None)
+        result = subprocess.run([os.sys.executable, '-c', code, str(script)], env=env, capture_output=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, b'')
+        self.assertEqual(result.stderr.decode('utf-8').splitlines(), [
+            '::error::收银客户端构建停止于：android；子阶段：android.compile；exit_code=37；category=r8_missing_classes；请在私库受控环境复现。',
+        ])
+
+    def test_actual_entry_masks_internal_version_errors_without_inventing_an_exit_code(self):
+        script = Path(__file__).with_name('pos-build.py').resolve()
+        code = """
+import runpy, subprocess, sys
+from unittest.mock import patch
+signature = b'Signer #1 certificate SHA-256 digest: b118b7c8f118d1c8b1c1115856615ee7ae1076022049a2c71f9190901a7c7d9e\\n'
+results = [subprocess.CompletedProcess([], 0, stdout=value, stderr=b'private output')
+    for value in (b'', signature, b'private badging')]
+sys.argv = [sys.argv[1], 'android']
+with patch.object(subprocess, 'run', side_effect=results):
+    runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            tools = root / 'build-tools/35.0.0'
+            tools.mkdir(parents=True)
+            (tools / 'apksigner').touch()
+            verifier = root / 'source/dev/packaging/verify_android_version.py'
+            verifier.parent.mkdir(parents=True)
+            verifier.write_text("def verify(*args):\n    raise ValueError('/private/source secret=never-public')\n", encoding='utf-8')
+            env = dict(os.environ, GITHUB_REPOSITORY='sdbcbt/CloudLinkPOS-CI', GITHUB_REF='refs/heads/main',
+                       POS_VERSION='1.0.1', POS_BUILD_NUMBER='1', POS_SOURCE_SHA='a' * 40, PYTHONIOENCODING='utf-8',
+                       ANDROID_HOME=folder, GITHUB_ENV=str(root / 'env'))
+            env.pop('SOURCE_TOKEN', None)
+            result = subprocess.run([os.sys.executable, '-c', code, str(script)], cwd=root, env=env, capture_output=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, b'')
+        self.assertEqual(result.stderr.decode('utf-8').splitlines(), [
+            '::error::收银客户端构建停止于：android；子阶段：android.version；exit_code=none；category=unknown；请在私库受控环境复现。',
+        ])
+
+
 class SigningTests(unittest.TestCase):
     def test_only_the_fixed_cloudlinkpos_release_certificate_is_accepted(self):
         fixed = 'Signer #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n'
