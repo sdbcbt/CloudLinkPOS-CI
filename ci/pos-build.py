@@ -25,10 +25,25 @@ class BuildFailure(RuntimeError):
 def run(args, cwd=ROOT, env=None):
     result = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
+        save_failure_log(result.stdout or b'', result.stderr or b'')
         # 只保留退出码与固定类别，不把命令、私库输出或凭据带入异常。
         category = classify_failure((result.stdout or b'') + b'\n' + (result.stderr or b''))
         raise BuildFailure(result.returncode, category)
     return result.stdout
+
+
+def save_failure_log(stdout, stderr):
+    # 首个失败独占临时文件，后续清理失败不能覆盖；保存失败不改变原构建结果。
+    temporary = os.environ.get('RUNNER_TEMP')
+    if not temporary:
+        return
+    try:
+        path = Path(temporary) / 'cloudlinkpos-pos-first-failure.log'
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(b'stdout:\n' + stdout + b'\nstderr:\n' + stderr)
+    except OSError:
+        pass
 
 
 def classify_failure(output):
@@ -155,7 +170,11 @@ def android():
     apk = ROOT / 'apps/pos/build/app/outputs/flutter-apk/app-release.apk'
     signature = run([str(versions[-1] / 'apksigner'), 'verify', '--verbose', '--print-certs', str(apk)]).decode()
     SUBSTAGE = 'android.signer_fingerprint'
-    verify_signer(signature)
+    try:
+        verify_signer(signature)
+    except ValueError:
+        save_failure_log(signature.encode('utf-8'), b'')
+        raise
     with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
         stream.write('POS_ANDROID_SIGNER_CERT_SHA256=' + ANDROID_SIGNER_CERT_SHA256 + '\n')
     SUBSTAGE = 'android.version'

@@ -159,3 +159,29 @@ jobs:
       - name: 清理安卓签名临时文件
         if: always() && matrix.platform == 'android'
         run: python3 automation/ci/pos-build.py cleanup
+      - name: 检查私有失败日志
+        if: failure()
+        id: failure_log
+        run: python automation/ci/report-pos-failure.py exists
+      - name: 签发失败详情专用检查令牌
+        if: failure() && steps.failure_log.outputs.exists == 'true'
+        id: failure_auth
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: sdbcbt
+          repositories: CloudLinkPOS
+          permission-contents: read
+          permission-checks: write
+      - name: 将失败详情仅回写私库
+        if: failure() && steps.failure_log.outputs.exists == 'true' && steps.failure_auth.outcome == 'success'
+        env:
+          CHECKS_TOKEN: ${{ steps.failure_auth.outputs.token }}
+          SOURCE_TOKEN: ${{ steps.auth.outputs.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: python automation/ci/report-pos-failure.py
