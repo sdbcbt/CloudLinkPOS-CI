@@ -1,0 +1,40 @@
+{
+  "sourceSHA": "c68c17da1cbf7dc197bd960e2f94c7f354216b15",
+  "beforeSHA": "aebfd79788a5008dd70b1afc31f3cebde2be7fc0",
+  "expectedServices": [
+    "grayconfig-api"
+  ],
+  "publicationPolicy": {
+    "grayRequired": true,
+    "generation": 4
+  },
+  "schema": "cloudlinkpos.public-source-build/v1",
+  "sourceRepository": "sdbcbt/CloudLinkPOS",
+  "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+  "runID": "42335576804",
+  "attempt": "1",
+  "workflowSHA": "c7ba612f5b0ecc8cda527546b2e3c87f8fd5679f",
+  "workflowPath": ".github/workflows/private-main.yml",
+  "receipts": [
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "c68c17da1cbf7dc197bd960e2f94c7f354216b15",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "c7ba612f5b0ecc8cda527546b2e3c87f8fd5679f",
+      "runID": "42335576804",
+      "attempt": "1",
+      "service": "grayconfig-api",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "grayconfig-api-v0.3.15",
+      "digest": "sha256:00f04d28106f1634f83ba98e7cb33ae497a291ab4b6d2d26f1a2eb8397c19fef",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "10bf05b81e80e30347e6b13917b35db2d87211833a52541cd8176f5628f045e0",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:00f04d28106f1634f83ba98e7cb33ae497a291ab4b6d2d26f1a2eb8397c19fef"
+      }
+    }
+  ]
+}
