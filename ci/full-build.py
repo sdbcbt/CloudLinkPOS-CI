@@ -15,6 +15,11 @@ ROOT = Path('source').resolve()
 REGISTRY = 'registry.cn-zhangjiakou.aliyuncs.com'
 IMAGE = REGISTRY + '/sdbcbt/cloudlinkpos'
 STAGE = '初始化'
+MANIFEST = 'deploy/helm/cloudlinkpos/fleet/rancher-images.yaml'
+# Fleet 专用部署分支：受管镜像清单迁移后只在此分支更新；名称表明该分支不能删除。
+DEPLOY_BRANCH = 'fleet-deploy-do-not-delete'
+# checkout 把部署分支清单另存在源码目录之外，plan 读取；文件不存在表示部署分支尚未建立。
+DEPLOY_MANIFEST = ROOT.parent / 'fleet-deploy-manifest.yaml'
 
 
 def run(args, cwd=None, env=None, data=None):
@@ -46,6 +51,55 @@ def checkout():
     if sha not in history:
         raise ValueError('提交不属于主线')
     run(['git', 'checkout', '--quiet', '--detach', sha], ROOT)
+    fetch_deploy_manifest(env)
+
+
+def fetch_deploy_manifest(env):
+    """读取 Fleet 部署分支上的受管清单。
+
+    只有 ls-remote 成功且确认分支不存在时才沿用主线清单；网络、认证等读取失败直接停止，
+    不能把它们当作尚未迁移，否则迁移后会绑定冻结主线的旧策略代次。
+    部署分支在独立的临时仓库中浅拉取，不改变源码仓库的浅克隆边界与主线历史核验。
+    """
+    remote = 'https://github.com/sdbcbt/CloudLinkPOS.git'
+    refs = run(['git', 'ls-remote', '--heads', remote, 'refs/heads/' + DEPLOY_BRANCH], ROOT, env).decode().split()
+    if not refs:
+        print('::warning::Fleet 部署分支尚未建立，发布策略使用主线清单')
+        return
+    if not re.fullmatch('[0-9a-f]{40}', refs[0]):
+        raise ValueError('部署分支引用无效')
+    with tempfile.TemporaryDirectory() as directory:
+        run(['git', 'init', '--quiet', directory])
+        run(['git', 'fetch', '--quiet', '--no-tags', '--depth=1', remote, refs[0]], directory, env)
+        DEPLOY_MANIFEST.write_bytes(run(['git', 'show', 'FETCH_HEAD:' + MANIFEST], directory))
+
+
+def manifest_policy(content):
+    manifest = json.loads('\n'.join(row for row in content.splitlines() if not row.lstrip().startswith('#')))
+    policy = manifest.get('releasePolicy')
+    if not isinstance(policy, dict) or type(policy.get('grayRequired')) is not bool or type(policy.get('generation')) is not int or policy['generation'] < 1:
+        raise ValueError('自动发布策略未初始化')
+    return policy
+
+
+def release_policy(main_content, deploy_content):
+    """选取代次更高的发布策略。
+
+    受管清单迁到部署分支前，主线是权威、部署分支由 grayconfig-api 滞后同步；迁移后部署分支是权威、主线清单冻结。
+    策略每次修改都会递增 generation，取较高代次即为当前权威策略，迁移前后都不需要额外开关。
+    """
+    policy = manifest_policy(main_content)
+    if deploy_content is not None:
+        deployed = manifest_policy(deploy_content)
+        if deployed['generation'] > policy['generation']:
+            policy = deployed
+    return policy
+
+
+def deploy_manifest():
+    if not DEPLOY_MANIFEST.exists():
+        return None
+    return DEPLOY_MANIFEST.read_text()
 
 
 def next_version(service, tags):
@@ -187,11 +241,7 @@ def main():
             out.write('matrix=' + json.dumps({'include': [{'service': name} for name in names]}) + '\n')
             out.write('has_services=' + str(bool(names)).lower() + '\n')
         if os.environ.get('PUBLISH_RECEIPTS') == 'true':
-            content = (ROOT / 'deploy/helm/cloudlinkpos/fleet/rancher-images.yaml').read_text()
-            manifest = json.loads('\n'.join(row for row in content.splitlines() if not row.lstrip().startswith('#')))
-            policy = manifest.get('releasePolicy')
-            if not isinstance(policy, dict) or type(policy.get('grayRequired')) is not bool or type(policy.get('generation')) is not int or policy['generation'] < 1:
-                raise ValueError('自动发布策略未初始化')
+            policy = release_policy((ROOT / MANIFEST).read_text(), deploy_manifest())
             plan = {'schema': 'cloudlinkpos.public-source-plan/v1', 'sourceSHA': os.environ['SOURCE_SHA'], 'beforeSHA': before, 'expectedServices': names, 'publicationPolicy': policy}
             Path('source-build-plan.json').write_text(json.dumps(plan, indent=2) + '\n')
     else:
