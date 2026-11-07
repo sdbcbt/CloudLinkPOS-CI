@@ -15,6 +15,10 @@ ROOT = Path('source').resolve()
 REGISTRY = 'registry.cn-zhangjiakou.aliyuncs.com'
 IMAGE = REGISTRY + '/sdbcbt/cloudlinkpos'
 STAGE = '初始化'
+MANIFEST = 'deploy/helm/cloudlinkpos/fleet/rancher-images.yaml'
+# Fleet 专用部署分支：受管镜像清单迁移后只在此分支更新；名称表明该分支不能删除。
+DEPLOY_BRANCH = 'fleet-deploy-do-not-delete'
+DEPLOY_REF = 'refs/remotes/origin/' + DEPLOY_BRANCH
 
 
 def run(args, cwd=None, env=None, data=None):
@@ -46,6 +50,40 @@ def checkout():
     if sha not in history:
         raise ValueError('提交不属于主线')
     run(['git', 'checkout', '--quiet', '--detach', sha], ROOT)
+    # 部署分支只有部署目录，浅拉取一个提交即可读取发布策略；分支尚未创建时沿用主线清单。
+    try:
+        run(['git', 'fetch', '--quiet', '--no-tags', '--depth=1', 'origin', f'+refs/heads/{DEPLOY_BRANCH}:{DEPLOY_REF}'], ROOT, env)
+    except RuntimeError:
+        print('::warning::未读取到 Fleet 部署分支，发布策略使用主线清单')
+
+
+def manifest_policy(content):
+    manifest = json.loads('\n'.join(row for row in content.splitlines() if not row.lstrip().startswith('#')))
+    policy = manifest.get('releasePolicy')
+    if not isinstance(policy, dict) or type(policy.get('grayRequired')) is not bool or type(policy.get('generation')) is not int or policy['generation'] < 1:
+        raise ValueError('自动发布策略未初始化')
+    return policy
+
+
+def release_policy(main_content, deploy_content):
+    """选取代次更高的发布策略。
+
+    受管清单迁到部署分支前，主线是权威、部署分支由 grayconfig-api 滞后同步；迁移后部署分支是权威、主线清单冻结。
+    策略每次修改都会递增 generation，取较高代次即为当前权威策略，迁移前后都不需要额外开关。
+    """
+    policy = manifest_policy(main_content)
+    if deploy_content is not None:
+        deployed = manifest_policy(deploy_content)
+        if deployed['generation'] > policy['generation']:
+            policy = deployed
+    return policy
+
+
+def deploy_manifest():
+    try:
+        return run(['git', 'show', DEPLOY_REF + ':' + MANIFEST], ROOT).decode()
+    except RuntimeError:
+        return None
 
 
 def next_version(service, tags):
@@ -187,11 +225,7 @@ def main():
             out.write('matrix=' + json.dumps({'include': [{'service': name} for name in names]}) + '\n')
             out.write('has_services=' + str(bool(names)).lower() + '\n')
         if os.environ.get('PUBLISH_RECEIPTS') == 'true':
-            content = (ROOT / 'deploy/helm/cloudlinkpos/fleet/rancher-images.yaml').read_text()
-            manifest = json.loads('\n'.join(row for row in content.splitlines() if not row.lstrip().startswith('#')))
-            policy = manifest.get('releasePolicy')
-            if not isinstance(policy, dict) or type(policy.get('grayRequired')) is not bool or type(policy.get('generation')) is not int or policy['generation'] < 1:
-                raise ValueError('自动发布策略未初始化')
+            policy = release_policy((ROOT / MANIFEST).read_text(), deploy_manifest())
             plan = {'schema': 'cloudlinkpos.public-source-plan/v1', 'sourceSHA': os.environ['SOURCE_SHA'], 'beforeSHA': before, 'expectedServices': names, 'publicationPolicy': policy}
             Path('source-build-plan.json').write_text(json.dumps(plan, indent=2) + '\n')
     else:

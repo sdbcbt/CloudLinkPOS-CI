@@ -12,6 +12,30 @@ BUILD = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(BUILD)
 
 
+def manifest(generation, gray, comment=True):
+    body = json.dumps({'releasePolicy': {'grayRequired': gray, 'generation': generation}, 'flagger': {}})
+    return ('# 受管清单\n' if comment else '') + body + '\n'
+
+
+class Policy(unittest.TestCase):
+    def test_deploy_branch_policy_wins_only_with_higher_generation(self):
+        # 迁移前部署分支滞后同步：主线代次更高时用主线。
+        self.assertEqual(BUILD.release_policy(manifest(5, True), manifest(4, False)), {'grayRequired': True, 'generation': 5})
+        # 迁移后主线清单冻结：部署分支代次更高时用部署分支。
+        self.assertEqual(BUILD.release_policy(manifest(4, False), manifest(6, True)), {'grayRequired': True, 'generation': 6})
+        self.assertEqual(BUILD.release_policy(manifest(4, False), manifest(4, True)), {'grayRequired': False, 'generation': 4})
+
+    def test_missing_deploy_branch_falls_back_to_main(self):
+        self.assertEqual(BUILD.release_policy(manifest(3, True, False), None)['generation'], 3)
+
+    def test_invalid_policy_is_rejected_on_either_branch(self):
+        broken = json.dumps({'releasePolicy': {'grayRequired': 'yes', 'generation': 1}})
+        with self.assertRaises(ValueError):
+            BUILD.release_policy(broken, None)
+        with self.assertRaises(ValueError):
+            BUILD.release_policy(manifest(3, True), broken)
+
+
 class Versions(unittest.TestCase):
     def test_next_version_uses_highest_service_version_and_excludes_other_aliases(self):
         tags = ['user-api-v0.1.99', 'user-api-v1.2.3', 'user-api-v1.2.4-rc1', 'user-api-v01.2.9', 'other-v9.0.0', 'user-api-sha-' + 'a' * 64, 'user-api-latest']
