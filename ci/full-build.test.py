@@ -36,6 +36,39 @@ class Policy(unittest.TestCase):
             BUILD.release_policy(manifest(3, True), broken)
 
 
+class DeployFetch(unittest.TestCase):
+    def run_fetch(self, outputs):
+        calls = []
+
+        def fake(args, cwd=None, env=None, data=None):
+            calls.append(args)
+            value = outputs.get(args[1])
+            if isinstance(value, Exception):
+                raise value
+            return value or b''
+        with tempfile.TemporaryDirectory() as directory, patch.object(BUILD, 'run', fake), patch.object(BUILD, 'DEPLOY_MANIFEST', Path(directory) / 'm.yaml') as target:
+            BUILD.fetch_deploy_manifest({})
+            return calls, (target.read_text() if target.exists() else None)
+
+    def test_absent_branch_falls_back_without_fetch(self):
+        calls, saved = self.run_fetch({'ls-remote': b''})
+        self.assertIsNone(saved)
+        self.assertEqual([c[1] for c in calls], ['ls-remote'])
+
+    def test_read_failure_stops_instead_of_falling_back(self):
+        with self.assertRaises(RuntimeError):
+            self.run_fetch({'ls-remote': RuntimeError('阶段失败')})
+        with self.assertRaises(RuntimeError):
+            self.run_fetch({'ls-remote': ('a' * 40 + '\trefs/heads/x\n').encode(), 'fetch': RuntimeError('阶段失败')})
+
+    def test_branch_is_fetched_in_separate_repository(self):
+        calls, saved = self.run_fetch({'ls-remote': ('a' * 40 + '\trefs/heads/x\n').encode(), 'show': manifest(7, True).encode()})
+        self.assertEqual(BUILD.release_policy(manifest(4, False), saved)['generation'], 7)
+        fetch = next(c for c in calls if c[1] == 'fetch')
+        self.assertIn('a' * 40, fetch)
+        self.assertNotIn(str(BUILD.ROOT), fetch)
+
+
 class Versions(unittest.TestCase):
     def test_next_version_uses_highest_service_version_and_excludes_other_aliases(self):
         tags = ['user-api-v0.1.99', 'user-api-v1.2.3', 'user-api-v1.2.4-rc1', 'user-api-v01.2.9', 'other-v9.0.0', 'user-api-sha-' + 'a' * 64, 'user-api-latest']

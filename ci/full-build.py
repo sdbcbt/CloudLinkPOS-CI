@@ -18,7 +18,8 @@ STAGE = '初始化'
 MANIFEST = 'deploy/helm/cloudlinkpos/fleet/rancher-images.yaml'
 # Fleet 专用部署分支：受管镜像清单迁移后只在此分支更新；名称表明该分支不能删除。
 DEPLOY_BRANCH = 'fleet-deploy-do-not-delete'
-DEPLOY_REF = 'refs/remotes/origin/' + DEPLOY_BRANCH
+# checkout 把部署分支清单另存在源码目录之外，plan 读取；文件不存在表示部署分支尚未建立。
+DEPLOY_MANIFEST = ROOT.parent / 'fleet-deploy-manifest.yaml'
 
 
 def run(args, cwd=None, env=None, data=None):
@@ -50,11 +51,27 @@ def checkout():
     if sha not in history:
         raise ValueError('提交不属于主线')
     run(['git', 'checkout', '--quiet', '--detach', sha], ROOT)
-    # 部署分支只有部署目录，浅拉取一个提交即可读取发布策略；分支尚未创建时沿用主线清单。
-    try:
-        run(['git', 'fetch', '--quiet', '--no-tags', '--depth=1', 'origin', f'+refs/heads/{DEPLOY_BRANCH}:{DEPLOY_REF}'], ROOT, env)
-    except RuntimeError:
-        print('::warning::未读取到 Fleet 部署分支，发布策略使用主线清单')
+    fetch_deploy_manifest(env)
+
+
+def fetch_deploy_manifest(env):
+    """读取 Fleet 部署分支上的受管清单。
+
+    只有 ls-remote 成功且确认分支不存在时才沿用主线清单；网络、认证等读取失败直接停止，
+    不能把它们当作尚未迁移，否则迁移后会绑定冻结主线的旧策略代次。
+    部署分支在独立的临时仓库中浅拉取，不改变源码仓库的浅克隆边界与主线历史核验。
+    """
+    remote = 'https://github.com/sdbcbt/CloudLinkPOS.git'
+    refs = run(['git', 'ls-remote', '--heads', remote, 'refs/heads/' + DEPLOY_BRANCH], ROOT, env).decode().split()
+    if not refs:
+        print('::warning::Fleet 部署分支尚未建立，发布策略使用主线清单')
+        return
+    if not re.fullmatch('[0-9a-f]{40}', refs[0]):
+        raise ValueError('部署分支引用无效')
+    with tempfile.TemporaryDirectory() as directory:
+        run(['git', 'init', '--quiet', directory])
+        run(['git', 'fetch', '--quiet', '--no-tags', '--depth=1', remote, refs[0]], directory, env)
+        DEPLOY_MANIFEST.write_bytes(run(['git', 'show', 'FETCH_HEAD:' + MANIFEST], directory))
 
 
 def manifest_policy(content):
@@ -80,10 +97,9 @@ def release_policy(main_content, deploy_content):
 
 
 def deploy_manifest():
-    try:
-        return run(['git', 'show', DEPLOY_REF + ':' + MANIFEST], ROOT).decode()
-    except RuntimeError:
+    if not DEPLOY_MANIFEST.exists():
         return None
+    return DEPLOY_MANIFEST.read_text()
 
 
 def next_version(service, tags):
