@@ -1,5 +1,17 @@
 [
   {
+    "sourceSHA": "13a533e00ff6d20e317d1242fb0e7f8f005726ce",
+    "beforeSHA": "b290d42d3d0208008277882daf087012c045d6d0",
+    "runID": "42436252246",
+    "attempt": "1",
+    "workflowSHA": "c7ba612f5b0ecc8cda527546b2e3c87f8fd5679f",
+    "publicationPolicy": {
+      "grayRequired": true,
+      "generation": 10
+    },
+    "path": "builds/13a533e00ff6d20e317d1242fb0e7f8f005726ce/42436252246-1.json"
+  },
+  {
     "sourceSHA": "b290d42d3d0208008277882daf087012c045d6d0",
     "beforeSHA": "153c699457502900de2fc96273841be57d220225",
     "runID": "42424073262",
