@@ -245,10 +245,16 @@ jobs:
       uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
       with:
         python-version: '3.12'
-    - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+    - id: setup-go
+      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+      continue-on-error: true
       with:
         go-version-file: source/apps/backend/go.mod
         cache: false
+    - name: Go 下载源故障时经模块代理兜底
+      if: steps.setup-go.outcome == 'failure'
+      working-directory: "."
+      run: bash automation/ci/setup-go-fallback.sh source/apps/backend/go.mod
     - name: 准备契约清单固定的格式工具
       run: |
         export GITHUB_WORKSPACE="$PWD"

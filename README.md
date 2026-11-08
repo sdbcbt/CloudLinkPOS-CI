@@ -29,3 +29,7 @@ Android 需要在本公开仓库配置固定正式签名的 `ANDROID_KEYSTORE_BA
 ### PR 质量检查的基准前移
 
 私库 PR 检查绑定通知中的 head 提交：head 不同即拒绝，新推送会重新通知。main 前移（包括生产发布 bot 只改清单的提交）不再使整组检查失败：`ci/quality-context.py` 采用 PR 当前 base，并核对它由通知 base 前移而来、仍在 main 首父历史中（通知 base 同样须在首父链上），改动范围也按当前 base 计算；各作业按固定 base/head 在执行器本地生成合并提交（固定作者与时间，结果一致），不依赖 GitHub 异步计算的 `refs/pull/N/merge`。与当前 main 冲突时拒绝检查，需先合并 main。离线测试：`python3 ci/quality-context_test.py`。
+
+### Go 安装源故障兜底
+
+质量检查与主线构建先用 `actions/setup-go` 安装 Go；该步骤失败（例如 GitHub go-versions 发行包返回 504、回退的 storage.googleapis.com 返回 403）时，由 `ci/setup-go-fallback.sh` 使用 Runner 预装的 Go，以 `GOTOOLCHAIN=go<版本>` 经 `proxy.golang.org` 下载官方工具链，并由 `sum.golang.org` 校验摘要，然后核对实际版本。兜底不使用 direct 下载，也不关闭校验。
