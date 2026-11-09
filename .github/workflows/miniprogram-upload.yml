@@ -1,0 +1,151 @@
+name: 小程序自动上传
+# 私库 main 推送命中 apps/miniprogram/ 或 deploy/miniprogram/ 时由 Cloudflare Worker 派发。
+# 构建私库固定提交并用微信 miniprogram-ci 上传为开发版；设为体验版、提审与发布在公众平台人工操作。
+# 单独成一次运行，失败不影响后端镜像批次的最终结果。源码与构建产物不上传为 Artifact。
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 已合并私库主线的完整提交
+        required: true
+        type: string
+      before_sha:
+        description: 推送前提交（app=changed 时用于识别改动；留空则上传全部）
+        required: false
+        default: ''
+        type: string
+      app:
+        description: changed（按改动识别）、all、organization 或 member
+        required: true
+        default: changed
+        type: string
+permissions: {}
+concurrency:
+  group: miniprogram-upload
+  cancel-in-progress: false
+  queue: max
+jobs:
+  plan:
+    if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      apps: ${{ steps.plan.outputs.apps }}
+      has_apps: ${{ steps.plan.outputs.has_apps }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        id: auth
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: sdbcbt
+          repositories: CloudLinkPOS
+          permission-contents: read
+      - name: 核验并读取固定私库主线
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_TOKEN: ${{ steps.auth.outputs.token }}
+        run: python3 automation/ci/full-build.py checkout
+      - name: 选择要上传的小程序
+        id: plan
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          BEFORE_SHA: ${{ inputs.before_sha }}
+          APP: ${{ inputs.app }}
+        run: |
+          case "$APP" in
+            changed) apps=$(node source/deploy/miniprogram/upload.mjs detect "$BEFORE_SHA" "$SOURCE_SHA") ;;
+            all) apps=$'organization\nmember' ;;
+            organization|member) apps="$APP" ;;
+            *) echo 'app 只能是 changed、all、organization 或 member' >&2; exit 1 ;;
+          esac
+          # 矩阵带上配置名前缀，每个小程序只读取自己的 AppID 与密钥，缺失即失败，不回退到另一个小程序。
+          json=$(printf '%s\n' "$apps" | python3 -c 'import json,sys; print(json.dumps([{"app": l.strip(), "key": l.strip().upper()} for l in sys.stdin if l.strip() in ("organization", "member")]))')
+          echo "apps=$json" >> "$GITHUB_OUTPUT"
+          [[ "$json" == "[]" ]] && echo has_apps=false >> "$GITHUB_OUTPUT" || echo has_apps=true >> "$GITHUB_OUTPUT"
+          echo "本次上传：$json"
+  upload:
+    if: needs.plan.outputs.has_apps == 'true'
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.apps) }}
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      APP: ${{ matrix.app }}
+      # 私库源码的安装、编译与上传输出只写入 Runner 临时文件（0600），公开日志只输出白名单结果。
+      PRIVATE_LOG: ${{ runner.temp }}/miniprogram-private.log
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        id: auth
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: sdbcbt
+          repositories: CloudLinkPOS
+          permission-contents: read
+      - name: 核验并读取固定私库主线
+        env:
+          SOURCE_TOKEN: ${{ steps.auth.outputs.token }}
+        run: python3 automation/ci/full-build.py checkout
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903
+        with:
+          node-version: '22.20.0'
+          package-manager-cache: false
+      - name: 准备固定工具
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pnpm" --registry=https://registry.npmjs.org --ignore-scripts --no-audit --no-fund --package-lock=false pnpm@10.28.2 > /dev/null 2>&1
+          echo "$RUNNER_TEMP/pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+          npm install --prefix "$RUNNER_TEMP/mpci" --registry=https://registry.npmjs.org --no-audit --no-fund --package-lock=false miniprogram-ci@2.1.48 > /dev/null 2>&1
+      - name: 按 AppID 构建微信小程序
+        env:
+          # AppID 与接口地址不是密钥，放在仓库 Variables；按 matrix.key 精确读取 MP_<APP>_APPID。
+          VITE_WECHAT_APP_ID: ${{ vars[format('MP_{0}_APPID', matrix.key)] }}
+          VITE_API_BASE_URL: ${{ vars.MP_API_BASE_URL || 'https://www.cloudlinkpos.com' }}
+        run: |
+          if [[ -z "$VITE_WECHAT_APP_ID" ]]; then
+            echo "未设置仓库 Variable MP_${APP^^}_APPID，不上传 $APP" >&2
+            exit 1
+          fi
+          umask 077
+          : > "$PRIVATE_LOG"
+          if ! { pnpm --dir "source/apps/miniprogram/$APP" install --frozen-lockfile --registry=https://registry.npmjs.org --fetch-timeout=120000 --fetch-retries=2 \
+                 && pnpm --dir "source/apps/miniprogram/$APP" run build:mp-weixin; } >> "$PRIVATE_LOG" 2>&1; then
+            echo "$APP 依赖安装或编译失败。为避免公开私库源码，诊断不输出到公开日志；请在本机按 docs/06-部署运维/小程序自动上传.md 复现。" >&2
+            exit 1
+          fi
+          echo "$APP 编译完成"
+      - name: 上传为开发版
+        env:
+          MP_APPID: ${{ vars[format('MP_{0}_APPID', matrix.key)] }}
+          # 代码上传密钥只在 Secrets，按 matrix.key 精确读取 MP_<APP>_UPLOAD_KEY。
+          MP_UPLOAD_KEY: ${{ secrets[format('MP_{0}_UPLOAD_KEY', matrix.key)] }}
+          MINIPROGRAM_CI_MODULE: ${{ runner.temp }}/mpci
+        run: |
+          if [[ -z "$MP_UPLOAD_KEY" ]]; then
+            echo "未设置仓库 Secret MP_${APP^^}_UPLOAD_KEY，不上传 $APP" >&2
+            exit 1
+          fi
+          umask 077
+          version="1.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
+          status=0
+          node source/deploy/miniprogram/upload.mjs upload "$APP" --version "$version" --desc "源码 ${SOURCE_SHA:0:7}" >> "$PRIVATE_LOG" 2>&1 || status=$?
+          # 只回显脚本写出的白名单结果行（版本、包大小、错误码），不回显 miniprogram-ci 的原始输出。
+          grep -E '^MP-UPLOAD-(RESULT|ERROR) ' "$PRIVATE_LOG" || true
+          if [[ $status -ne 0 ]]; then exit "$status"; fi
+          echo "### $APP 已上传开发版 $version（源码 ${SOURCE_SHA:0:7}）" >> "$GITHUB_STEP_SUMMARY"
+          echo '请在微信公众平台“版本管理”设为体验版或提交审核。' >> "$GITHUB_STEP_SUMMARY"
+      - name: 清理私有日志与构建产物
+        if: always()
+        run: rm -rf "$PRIVATE_LOG" source
