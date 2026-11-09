@@ -81,7 +81,6 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha }}
       APP: ${{ matrix.app }}
       # 私库源码的安装、编译与上传输出只写入 Runner 临时文件（0600），公开日志只输出白名单结果。
-      PRIVATE_LOG: ${{ runner.temp }}/miniprogram-private.log
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -105,6 +104,7 @@ jobs:
           package-manager-cache: false
       - name: 准备固定工具
         run: |
+          echo "PRIVATE_LOG=$RUNNER_TEMP/miniprogram-private.log" >> "$GITHUB_ENV"
           npm install --prefix "$RUNNER_TEMP/pnpm" --registry=https://registry.npmjs.org --ignore-scripts --no-audit --no-fund --package-lock=false pnpm@10.28.2 > /dev/null 2>&1
           echo "$RUNNER_TEMP/pnpm/node_modules/.bin" >> "$GITHUB_PATH"
           npm install --prefix "$RUNNER_TEMP/mpci" --registry=https://registry.npmjs.org --no-audit --no-fund --package-lock=false miniprogram-ci@2.1.48 > /dev/null 2>&1
