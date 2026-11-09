@@ -8,7 +8,9 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import shutil
 import tempfile
+import time
 import urllib.parse
 
 ROOT = Path('source').resolve()
@@ -20,6 +22,24 @@ MANIFEST = 'deploy/helm/cloudlinkpos/fleet/rancher-images.yaml'
 DEPLOY_BRANCH = 'fleet-deploy-do-not-delete'
 # checkout 把部署分支清单另存在源码目录之外，plan 读取；文件不存在表示部署分支尚未建立。
 DEPLOY_MANIFEST = ROOT.parent / 'fleet-deploy-manifest.yaml'
+
+
+# 推送前的网络步骤（读源码、读私库标签、拉基础镜像、编译）遇到偶发网络故障时重试；
+# 推送与回读不重试，避免同一服务生成两个版本号。
+RETRY_ATTEMPTS = 2  # 总共最多 2 次：失败后只再试 1 次
+RETRY_WAIT_SECONDS = 30
+SLEEP = time.sleep
+
+
+def retry(stage, action, retryable=(Exception,)):
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return action()
+        except retryable:
+            if attempt == RETRY_ATTEMPTS:
+                raise
+            print('::warning::' + stage + '失败，第 ' + str(attempt) + ' 次重试', flush=True)
+            SLEEP(RETRY_WAIT_SECONDS * attempt)
 
 
 def run(args, cwd=None, env=None, data=None):
@@ -37,9 +57,21 @@ def module(name, path):
 
 
 def checkout():
-    sha = os.environ['SOURCE_SHA']
-    if not re.fullmatch('[0-9a-f]{40}', sha):
+    """读取源码；只对 git 网络失败（RuntimeError）重试，提交不属于主线等确定性错误直接停止。"""
+    if not re.fullmatch('[0-9a-f]{40}', os.environ['SOURCE_SHA']):
         raise ValueError('提交格式无效')
+
+    def attempt():
+        # 重试前清理上一次留下的半成品目录。
+        shutil.rmtree(ROOT, ignore_errors=True)
+        if DEPLOY_MANIFEST.exists():
+            DEPLOY_MANIFEST.unlink()
+        checkout_once()
+    retry('读取私库源码', attempt, (RuntimeError,))
+
+
+def checkout_once():
+    sha = os.environ['SOURCE_SHA']
     ROOT.mkdir()
     run(['git', 'init', '--quiet', str(ROOT)])
     run(['git', 'remote', 'add', 'origin', 'https://github.com/sdbcbt/CloudLinkPOS.git'], ROOT)
@@ -153,14 +185,19 @@ def build(service):
     client = publisher.Registry(REGISTRY, 'sdbcbt', 'cloudlinkpos', os.environ['ACR_USERNAME'], os.environ['ACR_PASSWORD'])
     STAGE = '验证私有仓库与正式版本'
     print(STAGE, flush=True)
-    client.check_private_existing()
-    version = next_version(service, all_tags(client))
-    client.reject_existing_tags([version])
+
+    def resolve_version():
+        client.check_private_existing()
+        candidate = next_version(service, all_tags(client))
+        client.reject_existing_tags([candidate])
+        return candidate
+    # 只读核验与版本计算，网络超时可安全重试。
+    version = retry(STAGE, resolve_version)
     with tempfile.TemporaryDirectory() as folder:
         folder = Path(folder)
         base_out = folder / 'base.out'
         profile = 'nginx' if service == 'admin' else 'alpine'
-        run([sys.executable, 'deploy/scripts/pull-ci-base-image.py', '--profile', profile, '--github-output', str(base_out)], ROOT)
+        retry('拉取固定基础镜像', lambda: run([sys.executable, 'deploy/scripts/pull-ci-base-image.py', '--profile', profile, '--github-output', str(base_out)], ROOT))
         base = dict(line.split('=', 1) for line in base_out.read_text().splitlines())['base_image']
         if service == 'admin':
             STAGE = '构建管理后台'
@@ -182,7 +219,7 @@ def build(service):
         metadata = json.loads((output / 'release.json').read_text())
         STAGE = '编译正式镜像'
         print(STAGE, flush=True)
-        run(['docker', 'build', '--platform', 'linux/amd64', '-t', 'local-fullbuild:build', str(output / 'context')])
+        retry(STAGE, lambda: run(['docker', 'build', '--platform', 'linux/amd64', '-t', 'local-fullbuild:build', str(output / 'context')]))
         # 仅将版本号推送到注册表，不使用上下文 SHA 标签。
         client.reject_existing_tags([version])
         env = dict(os.environ, DOCKER_CONFIG=str(folder / 'docker'))
