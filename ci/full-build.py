@@ -242,7 +242,8 @@ def main():
             out.write('has_services=' + str(bool(names)).lower() + '\n')
         if os.environ.get('PUBLISH_RECEIPTS') == 'true':
             policy = release_policy((ROOT / MANIFEST).read_text(), deploy_manifest())
-            plan = {'schema': 'cloudlinkpos.public-source-plan/v1', 'sourceSHA': os.environ['SOURCE_SHA'], 'beforeSHA': before, 'expectedServices': names, 'publicationPolicy': policy}
+            # explicit：补建指定服务，只代表部分服务，不能作为该源码提交的整批 PR 收据。
+            plan = {'schema': 'cloudlinkpos.public-source-plan/v1', 'sourceSHA': os.environ['SOURCE_SHA'], 'beforeSHA': before, 'expectedServices': names, 'publicationPolicy': policy, 'selection': 'explicit' if selected not in ('all', 'changed') else selected}
             Path('source-build-plan.json').write_text(json.dumps(plan, indent=2) + '\n')
     else:
         build(os.environ['BUILD_SERVICE'])

@@ -54,6 +54,17 @@ def build_batch(folder, env):
     return dict(sourceSHA=plan['sourceSHA'], beforeSHA=plan['beforeSHA'], expectedServices=names, publicationPolicy={'grayRequired': policy['grayRequired'], 'generation': policy['generation']}, schema='cloudlinkpos.public-source-build/v1', sourceRepository='sdbcbt/CloudLinkPOS', buildRepository=REPO, runID=env['GITHUB_RUN_ID'], attempt=env['GITHUB_RUN_ATTEMPT'], workflowSHA=env['GITHUB_SHA'], workflowPath='.github/workflows/private-main.yml', receipts=[receipts[name] for name in sorted(receipts)])
 
 
+def partial_selection(folder):
+    """补建指定服务的批次只覆盖部分服务，不得写成该源码提交的整批 PR 收据。"""
+    plans = list(folder.rglob('source-build-plan.json'))
+    if len(plans) != 1:
+        raise ValueError('缺少唯一的构建计划')
+    selection = json.loads(plans[0].read_text()).get('selection', 'changed')
+    if selection not in ('all', 'changed', 'explicit'):
+        raise ValueError('构建计划选择方式无效')
+    return selection == 'explicit'
+
+
 def main():
     if os.environ['GITHUB_REPOSITORY'] != REPO or os.environ['GITHUB_REF'] != 'refs/heads/main':
         raise ValueError('只允许受管主线保存收据')
@@ -84,7 +95,9 @@ def main():
         if counts.get(name, 0) < 2 and not any((value['receipts'][0]['service'], value['runID'], value['attempt']) == identity for value in selected):
             selected.append(entry)
             counts[name] = counts.get(name, 0) + 1
-    files = {'catalog.json': selected, path: batch, 'sources/' + batch['sourceSHA'] + '.json': batch, 'index.json': index[:1000]}
+    files = {'catalog.json': selected, path: batch, 'index.json': index[:1000]}
+    if not partial_selection(Path('input')):
+        files['sources/' + batch['sourceSHA'] + '.json'] = batch
     tree = {'tree': [{'path': name, 'mode': '100644', 'type': 'blob', 'content': json.dumps(value, ensure_ascii=False, indent=2) + '\n'} for name, value in files.items()]}
     if parent:
         tree['base_tree'] = api('GET', '/git/commits/' + parent)['tree']['sha']
