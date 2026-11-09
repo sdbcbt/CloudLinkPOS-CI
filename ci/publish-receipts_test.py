@@ -35,6 +35,20 @@ class PublicReceipts(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.execute(change)
 
+    def test_explicit_selection_is_partial_and_unknown_selection_rejected(self):
+        for selection, partial in (('changed', False), ('all', False), ('explicit', True)):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / 'source-build-plan.json').write_text(json.dumps({'selection': selection}))
+                self.assertIs(PUBLISH.partial_selection(root), partial)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'source-build-plan.json').write_text(json.dumps({}))
+            self.assertIs(PUBLISH.partial_selection(root), False)
+            (root / 'source-build-plan.json').write_text(json.dumps({'selection': 'other'}))
+            with self.assertRaises(ValueError):
+                PUBLISH.partial_selection(root)
+
 
 if __name__ == '__main__':
     unittest.main()
