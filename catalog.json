@@ -1,5 +1,89 @@
 [
   {
+    "sourceSHA": "dc2edfe2dea3bc1e855eebb56daf227ebf331e05",
+    "beforeSHA": "adbb30348d5d3f0df4ff689f08aff63dc81f0b0d",
+    "expectedServices": [
+      "permission-rpc",
+      "user-rpc"
+    ],
+    "publicationPolicy": {
+      "grayRequired": false,
+      "generation": 11
+    },
+    "schema": "cloudlinkpos.public-source-build/v1",
+    "sourceRepository": "sdbcbt/CloudLinkPOS",
+    "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+    "runID": "42570107314",
+    "attempt": "1",
+    "workflowSHA": "9d023c1b72b83de6f5ddea8ad43dfa6fa2f5933f",
+    "workflowPath": ".github/workflows/private-main.yml",
+    "path": "builds/dc2edfe2dea3bc1e855eebb56daf227ebf331e05/42570107314-1.json",
+    "receipts": [
+      {
+        "schema": "cloudlinkpos.public-full-build/v1",
+        "sourceRepository": "sdbcbt/CloudLinkPOS",
+        "sourceSHA": "dc2edfe2dea3bc1e855eebb56daf227ebf331e05",
+        "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+        "workflowSHA": "9d023c1b72b83de6f5ddea8ad43dfa6fa2f5933f",
+        "runID": "42570107314",
+        "attempt": "1",
+        "service": "permission-rpc",
+        "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+        "tag": "permission-rpc-v0.3.14",
+        "digest": "sha256:99a02c2b665822ef1da09db348623b8e396f97b0056c8031b7ad32c338d5e615",
+        "tagPolicy": "version-and-latest-v1",
+        "metadataSHA256": "b8e2f7e7974c203994f5f4b2895e33344db67f57e798eb49712100beb67c0671",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:99a02c2b665822ef1da09db348623b8e396f97b0056c8031b7ad32c338d5e615"
+        }
+      }
+    ]
+  },
+  {
+    "sourceSHA": "dc2edfe2dea3bc1e855eebb56daf227ebf331e05",
+    "beforeSHA": "adbb30348d5d3f0df4ff689f08aff63dc81f0b0d",
+    "expectedServices": [
+      "permission-rpc",
+      "user-rpc"
+    ],
+    "publicationPolicy": {
+      "grayRequired": false,
+      "generation": 11
+    },
+    "schema": "cloudlinkpos.public-source-build/v1",
+    "sourceRepository": "sdbcbt/CloudLinkPOS",
+    "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+    "runID": "42570107314",
+    "attempt": "1",
+    "workflowSHA": "9d023c1b72b83de6f5ddea8ad43dfa6fa2f5933f",
+    "workflowPath": ".github/workflows/private-main.yml",
+    "path": "builds/dc2edfe2dea3bc1e855eebb56daf227ebf331e05/42570107314-1.json",
+    "receipts": [
+      {
+        "schema": "cloudlinkpos.public-full-build/v1",
+        "sourceRepository": "sdbcbt/CloudLinkPOS",
+        "sourceSHA": "dc2edfe2dea3bc1e855eebb56daf227ebf331e05",
+        "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+        "workflowSHA": "9d023c1b72b83de6f5ddea8ad43dfa6fa2f5933f",
+        "runID": "42570107314",
+        "attempt": "1",
+        "service": "user-rpc",
+        "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+        "tag": "user-rpc-v0.3.18",
+        "digest": "sha256:6204a725a0e3c570d6f4704f0f56f7b9757bb337f235f84490e646f9ab544a46",
+        "tagPolicy": "version-and-latest-v1",
+        "metadataSHA256": "099d9263b3fc85562079a1de429d979489491405c8e6f025822bb1f2e51d60f7",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:6204a725a0e3c570d6f4704f0f56f7b9757bb337f235f84490e646f9ab544a46"
+        }
+      }
+    ]
+  },
+  {
     "sourceSHA": "f1acd007e61eb41700f45afd3b0202f315170349",
     "beforeSHA": "2041c05878561cd9620558284ff36ce7e57ddfba",
     "expectedServices": [
@@ -6822,101 +6906,6 @@
         "workflowSHA": "9d023c1b72b83de6f5ddea8ad43dfa6fa2f5933f",
         "runID": "42487558116",
         "attempt": "1",
-        "service": "user-rpc",
-        "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
-        "tag": "user-rpc-v0.3.16",
-        "digest": "sha256:f3867de25532b81fc530eeb330cfc00919480201825737cefedaa5f63b4278db",
-        "tagPolicy": "version-and-latest-v1",
-        "metadataSHA256": "36d04ec84cd5ad8db595cb96f4acb86058044262052e70abb26a67dbab809454",
-        "privateEvidence": {
-          "authenticated_read": true,
-          "anonymous_pull_denied": true,
-          "image_digest": "sha256:f3867de25532b81fc530eeb330cfc00919480201825737cefedaa5f63b4278db"
-        }
-      }
-    ]
-  },
-  {
-    "sourceSHA": "b1e1391ec8f66e1cc4edd9ac334962b3757e3af1",
-    "beforeSHA": "cbb1dab1e4f4a1dcf0735c16899b4c07bb5321e4",
-    "expectedServices": [
-      "auditlog-api",
-      "auditlog-rpc",
-      "cert-api",
-      "cert-rpc",
-      "cloudsync-api",
-      "dailysettle-api",
-      "dailysettle-rpc",
-      "document-api",
-      "document-rpc",
-      "employee-api",
-      "employee-rpc",
-      "feature-api",
-      "feature-rpc",
-      "file-api",
-      "file-rpc",
-      "finance-api",
-      "gateway",
-      "grayconfig-api",
-      "inventory-api",
-      "inventory-rpc",
-      "iot-api",
-      "iot-rpc",
-      "job",
-      "member-api",
-      "member-rpc",
-      "notification-api",
-      "notification-rpc",
-      "order-api",
-      "order-rpc",
-      "organization-api",
-      "organization-rpc",
-      "orgrole-rpc",
-      "payment-api",
-      "payment-rpc",
-      "permission-api",
-      "permission-rpc",
-      "platformwallet-api",
-      "platformwallet-rpc",
-      "pricing-api",
-      "pricing-rpc",
-      "product-api",
-      "product-rpc",
-      "promotion-api",
-      "promotion-rpc",
-      "report-api",
-      "report-rpc",
-      "role-api",
-      "scheduler",
-      "user-api",
-      "user-rpc",
-      "userrole-rpc",
-      "wallet-api",
-      "wallet-rpc",
-      "wechat-api",
-      "wechat-rpc"
-    ],
-    "publicationPolicy": {
-      "grayRequired": false,
-      "generation": 11
-    },
-    "schema": "cloudlinkpos.public-source-build/v1",
-    "sourceRepository": "sdbcbt/CloudLinkPOS",
-    "buildRepository": "sdbcbt/CloudLinkPOS-CI",
-    "runID": "42487558116",
-    "attempt": "1",
-    "workflowSHA": "9d023c1b72b83de6f5ddea8ad43dfa6fa2f5933f",
-    "workflowPath": ".github/workflows/private-main.yml",
-    "path": "builds/b1e1391ec8f66e1cc4edd9ac334962b3757e3af1/42487558116-1.json",
-    "receipts": [
-      {
-        "schema": "cloudlinkpos.public-full-build/v1",
-        "sourceRepository": "sdbcbt/CloudLinkPOS",
-        "sourceSHA": "b1e1391ec8f66e1cc4edd9ac334962b3757e3af1",
-        "buildRepository": "sdbcbt/CloudLinkPOS-CI",
-        "workflowSHA": "9d023c1b72b83de6f5ddea8ad43dfa6fa2f5933f",
-        "runID": "42487558116",
-        "attempt": "1",
         "service": "userrole-rpc",
         "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
         "tag": "userrole-rpc-v0.3.13",
@@ -8086,93 +8075,6 @@
           "authenticated_read": true,
           "anonymous_pull_denied": true,
           "image_digest": "sha256:d15141ada99685ca1494ad1fdbdae2c151f495ae2ee7b635af68ceb219c17eb9"
-        }
-      }
-    ]
-  },
-  {
-    "sourceSHA": "96cc17554d6445167cf8d31662e46c23a24e6625",
-    "beforeSHA": "c68c17da1cbf7dc197bd960e2f94c7f354216b15",
-    "expectedServices": [
-      "admin",
-      "auditlog-api",
-      "cert-api",
-      "cloudsync-api",
-      "dailysettle-api",
-      "document-api",
-      "document-rpc",
-      "employee-api",
-      "employee-rpc",
-      "feature-api",
-      "file-api",
-      "finance-api",
-      "gateway",
-      "grayconfig-api",
-      "installer",
-      "inventory-api",
-      "inventory-rpc",
-      "iot-api",
-      "iot-rpc",
-      "job",
-      "member-api",
-      "member-rpc",
-      "notification-api",
-      "order-api",
-      "order-rpc",
-      "organization-api",
-      "organization-rpc",
-      "payment-api",
-      "payment-rpc",
-      "permission-api",
-      "permission-rpc",
-      "platformwallet-api",
-      "pricing-api",
-      "pricing-rpc",
-      "product-api",
-      "product-rpc",
-      "promotion-api",
-      "promotion-rpc",
-      "report-api",
-      "report-rpc",
-      "role-api",
-      "user-api",
-      "user-rpc",
-      "userrole-rpc",
-      "wallet-api",
-      "wechat-api",
-      "wechat-rpc"
-    ],
-    "publicationPolicy": {
-      "grayRequired": false,
-      "generation": 7
-    },
-    "schema": "cloudlinkpos.public-source-build/v1",
-    "sourceRepository": "sdbcbt/CloudLinkPOS",
-    "buildRepository": "sdbcbt/CloudLinkPOS-CI",
-    "runID": "42350976241",
-    "attempt": "1",
-    "workflowSHA": "c7ba612f5b0ecc8cda527546b2e3c87f8fd5679f",
-    "workflowPath": ".github/workflows/private-main.yml",
-    "path": "builds/96cc17554d6445167cf8d31662e46c23a24e6625/42350976241-1.json",
-    "receipts": [
-      {
-        "schema": "cloudlinkpos.public-full-build/v1",
-        "sourceRepository": "sdbcbt/CloudLinkPOS",
-        "sourceSHA": "96cc17554d6445167cf8d31662e46c23a24e6625",
-        "buildRepository": "sdbcbt/CloudLinkPOS-CI",
-        "workflowSHA": "c7ba612f5b0ecc8cda527546b2e3c87f8fd5679f",
-        "runID": "42350976241",
-        "attempt": "1",
-        "service": "permission-rpc",
-        "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
-        "tag": "permission-rpc-v0.3.11",
-        "digest": "sha256:2002cc1d49075dfbfa17722f172a67b377870348e1f9489e1495aa2360a489a4",
-        "tagPolicy": "version-and-latest-v1",
-        "metadataSHA256": "2e91b5a82dabad5abed9b0ab65457e034fa903c92e524d8597f8e5df39a032c4",
-        "privateEvidence": {
-          "authenticated_read": true,
-          "anonymous_pull_denied": true,
-          "image_digest": "sha256:2002cc1d49075dfbfa17722f172a67b377870348e1f9489e1495aa2360a489a4"
         }
       }
     ]

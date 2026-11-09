@@ -1,0 +1,61 @@
+{
+  "sourceSHA": "dc2edfe2dea3bc1e855eebb56daf227ebf331e05",
+  "beforeSHA": "adbb30348d5d3f0df4ff689f08aff63dc81f0b0d",
+  "expectedServices": [
+    "permission-rpc",
+    "user-rpc"
+  ],
+  "publicationPolicy": {
+    "grayRequired": false,
+    "generation": 11
+  },
+  "schema": "cloudlinkpos.public-source-build/v1",
+  "sourceRepository": "sdbcbt/CloudLinkPOS",
+  "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+  "runID": "42570107314",
+  "attempt": "1",
+  "workflowSHA": "9d023c1b72b83de6f5ddea8ad43dfa6fa2f5933f",
+  "workflowPath": ".github/workflows/private-main.yml",
+  "receipts": [
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "dc2edfe2dea3bc1e855eebb56daf227ebf331e05",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "9d023c1b72b83de6f5ddea8ad43dfa6fa2f5933f",
+      "runID": "42570107314",
+      "attempt": "1",
+      "service": "permission-rpc",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "permission-rpc-v0.3.14",
+      "digest": "sha256:99a02c2b665822ef1da09db348623b8e396f97b0056c8031b7ad32c338d5e615",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "b8e2f7e7974c203994f5f4b2895e33344db67f57e798eb49712100beb67c0671",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:99a02c2b665822ef1da09db348623b8e396f97b0056c8031b7ad32c338d5e615"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "dc2edfe2dea3bc1e855eebb56daf227ebf331e05",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "9d023c1b72b83de6f5ddea8ad43dfa6fa2f5933f",
+      "runID": "42570107314",
+      "attempt": "1",
+      "service": "user-rpc",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "user-rpc-v0.3.18",
+      "digest": "sha256:6204a725a0e3c570d6f4704f0f56f7b9757bb337f235f84490e646f9ab544a46",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "099d9263b3fc85562079a1de429d979489491405c8e6f025822bb1f2e51d60f7",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:6204a725a0e3c570d6f4704f0f56f7b9757bb337f235f84490e646f9ab544a46"
+      }
+    }
+  ]
+}
