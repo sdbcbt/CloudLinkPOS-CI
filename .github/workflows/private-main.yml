@@ -10,6 +10,11 @@ on:
         description: 私库 main 推送后的完整提交
         required: true
         type: string
+      services:
+        description: 默认 changed（按前后提交识别受影响服务）；补建个别失败服务时填逗号分隔的服务名，例如 inventory-rpc,iot-rpc
+        required: false
+        default: changed
+        type: string
 permissions: {}
 jobs:
   build:
@@ -20,6 +25,6 @@ jobs:
     with:
       source_sha: ${{ inputs.after }}
       before_sha: ${{ inputs.before }}
-      services: changed
+      services: ${{ inputs.services || 'changed' }}
       publish_receipts: true
     secrets: inherit

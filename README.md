@@ -1,7 +1,7 @@
 
 ### 主线构建与全局发布模式
 
-`private-main.yml` 调用 `full-version-build.yml`，按私库推送前后提交识别受影响服务。构建只推送版本号和 latest，不生成 SHA 标签。每个成功服务的私有访问证据与整批计划核对后，由 `ci/publish-receipts.py` 将白名单元数据写入 `source-build-receipts` 分支；源码、日志和凭据不进入该分支。收据文件存在不代表工作流已结束，生产发布服务还必须核对具体 run/attempt 的最终成功结果。
+`private-main.yml` 调用 `full-version-build.yml`，按私库推送前后提交识别受影响服务。手动触发时 `services` 默认 `changed`；个别服务构建失败需要补建时，用同一 `before`/`after` 重新触发并把 `services` 填为逗号分隔的失败服务名（如 `inventory-rpc,iot-rpc`），只构建这些服务，不在原运行上重跑，也不重建其他服务（每次构建都会生成新版本号）。构建只推送版本号和 latest，不生成 SHA 标签。每个成功服务的私有访问证据与整批计划核对后，由 `ci/publish-receipts.py` 将白名单元数据写入 `source-build-receipts` 分支；源码、日志和凭据不进入该分支。收据文件存在不代表工作流已结束，生产发布服务还必须核对具体 run/attempt 的最终成功结果。
 
 生产后台的全局发布模式保存在私库 Fleet 清单的 `releasePolicy`。受管清单迁到 Fleet 专用部署分支 `fleet-deploy-do-not-delete`（该分支严禁删除）后，主线清单冻结；构建计划同时读取主线与部署分支两份清单，取 `generation` 较高的策略，迁移前后都无需额外开关。关闭时，生产服务核验本批构建成功、策略代次一致、正式版本就绪及源码未倒退后，使用生产专用 GitHub App 更新私库清单，由 Fleet 发布；开启时保留待灰度版本，公开 CI 不能绕过。进行中的任务、候选基础设施及灰度页面不会因关闭开关被删除。公开 CI 不持有私库源码或部署清单写入凭据。
 

@@ -322,6 +322,11 @@ class WorkflowTests(unittest.TestCase):
         main = yaml.safe_load((root / '.github/workflows/private-main.yml').read_text())
         self.assertNotIn('pos', main['jobs'])
         self.assertEqual(main['jobs']['build']['uses'], './.github/workflows/full-version-build.yml')
+        # 补建入口：默认按变更识别，可显式指定逗号分隔的服务名。
+        services = main[True]['workflow_dispatch']['inputs']['services'] if True in main else main['on']['workflow_dispatch']['inputs']['services']
+        self.assertEqual(services['default'], 'changed')
+        self.assertIs(services['required'], False)
+        self.assertEqual(main['jobs']['build']['with']['services'], "${{ inputs.services || 'changed' }}")
 
 
 
