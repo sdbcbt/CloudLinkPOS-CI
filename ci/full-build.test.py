@@ -118,5 +118,57 @@ class AdminContext(unittest.TestCase):
             self.assertIn('release-tag="admin-v0.3.5"', (root / 'context/Dockerfile').read_text())
 
 
+class Retry(unittest.TestCase):
+    def test_retries_once_then_succeeds_and_waits(self):
+        waits, calls = [], []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError('网络')
+            return 'ok'
+        with patch.object(BUILD, 'SLEEP', waits.append):
+            self.assertEqual(BUILD.retry('阶段', flaky), 'ok')
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(waits, [BUILD.RETRY_WAIT_SECONDS])
+
+    def test_gives_up_after_limit(self):
+        calls = []
+
+        def broken():
+            calls.append(1)
+            raise RuntimeError('网络')
+        with patch.object(BUILD, 'SLEEP', lambda _: None), self.assertRaises(RuntimeError):
+            BUILD.retry('阶段', broken)
+        self.assertEqual(len(calls), BUILD.RETRY_ATTEMPTS)
+        self.assertLessEqual(BUILD.RETRY_ATTEMPTS, 2)
+
+    def test_non_retryable_error_stops_immediately(self):
+        calls = []
+
+        def wrong():
+            calls.append(1)
+            raise ValueError('提交不属于主线')
+        with patch.object(BUILD, 'SLEEP', lambda _: None), self.assertRaises(ValueError):
+            BUILD.retry('读取私库源码', wrong, (RuntimeError,))
+        self.assertEqual(len(calls), 1)
+
+    def test_checkout_cleans_partial_directory_before_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'source'
+            seen = []
+
+            def once():
+                seen.append(root.exists())
+                root.mkdir()
+                if len(seen) == 1:
+                    raise RuntimeError('网络')
+            with patch.object(BUILD, 'ROOT', root), patch.object(BUILD, 'DEPLOY_MANIFEST', Path(directory) / 'm.yaml'), \
+                    patch.object(BUILD, 'checkout_once', once), patch.object(BUILD, 'SLEEP', lambda _: None), \
+                    patch.dict(BUILD.os.environ, {'SOURCE_SHA': 'a' * 40}):
+                BUILD.checkout()
+            self.assertEqual(seen, [False, False])
+
+
 if __name__ == '__main__':
     unittest.main()
