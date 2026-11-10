@@ -144,6 +144,12 @@ jobs:
         run: python automation/ci/pos-build.py test
       - name: 静默构建 Windows 安装包和便携包
         if: matrix.platform == 'windows'
+        env:
+          POS_UPGRADE_PUBLIC_KEY: ${{ vars.POS_UPGRADE_PUBLIC_KEY }}
+          POS_UPGRADE_PERMIT_PUBLIC_KEY: ${{ vars.POS_UPGRADE_PERMIT_PUBLIC_KEY }}
+          POS_RELEASE_SIGNING_KEY: ${{ secrets.POS_RELEASE_SIGNING_KEY }}
+          POS_WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.POS_WINDOWS_CODESIGN_PFX_BASE64 }}
+          POS_WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.POS_WINDOWS_CODESIGN_PFX_PASSWORD }}
         run: |
           python automation/ci/pos-build.py windows
           python automation/ci/pos-build.py installer
