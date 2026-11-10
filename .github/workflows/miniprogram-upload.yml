@@ -15,7 +15,7 @@ on:
         default: ''
         type: string
       app:
-        description: changed（按改动识别）、all、organization 或 member
+        description: changed（按改动识别）、all，或 deploy/miniprogram/apps.json 中登记的小程序名称（如 organization、member）
         required: true
         default: changed
         type: string
@@ -57,14 +57,9 @@ jobs:
           BEFORE_SHA: ${{ inputs.before_sha }}
           APP: ${{ inputs.app }}
         run: |
-          case "$APP" in
-            changed) apps=$(node source/deploy/miniprogram/upload.mjs detect "$BEFORE_SHA" "$SOURCE_SHA") ;;
-            all) apps=$'organization\nmember' ;;
-            organization|member) apps="$APP" ;;
-            *) echo 'app 只能是 changed、all、organization 或 member' >&2; exit 1 ;;
-          esac
-          # 矩阵带上配置名前缀，每个小程序只读取自己的 AppID 与密钥，缺失即失败，不回退到另一个小程序。
-          json=$(printf '%s\n' "$apps" | python3 -c 'import json,sys; print(json.dumps([{"app": l.strip(), "key": l.strip().upper()} for l in sys.stdin if l.strip() in ("organization", "member")]))')
+          # 小程序名单与改动识别都由私库 deploy/miniprogram/apps.json 决定；本工作流不写死名单，新增小程序无需修改。
+          # 矩阵带上配置名前缀，每个小程序只读取自己的 MP_<KEY>_APPID 与密钥，缺失即失败，不回退到另一个小程序。
+          json=$(node source/deploy/miniprogram/upload.mjs plan "$APP" "$BEFORE_SHA" "$SOURCE_SHA")
           echo "apps=$json" >> "$GITHUB_OUTPUT"
           [[ "$json" == "[]" ]] && echo has_apps=false >> "$GITHUB_OUTPUT" || echo has_apps=true >> "$GITHUB_OUTPUT"
           echo "本次上传：$json"
