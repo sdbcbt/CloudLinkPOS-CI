@@ -1,0 +1,103 @@
+{
+  "sourceSHA": "1c1fdebee9c1608725dd2f46113b4b24f814e63d",
+  "beforeSHA": "1460b6e2a351f3c1e3a8742f326b8f85b513220b",
+  "expectedServices": [
+    "gateway",
+    "member-api",
+    "payment-api",
+    "payment-rpc"
+  ],
+  "publicationPolicy": {
+    "grayRequired": false,
+    "generation": 11
+  },
+  "schema": "cloudlinkpos.public-source-build/v1",
+  "sourceRepository": "sdbcbt/CloudLinkPOS",
+  "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+  "runID": "43325594657",
+  "attempt": "1",
+  "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+  "workflowPath": ".github/workflows/private-main.yml",
+  "receipts": [
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "1c1fdebee9c1608725dd2f46113b4b24f814e63d",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+      "runID": "43325594657",
+      "attempt": "1",
+      "service": "gateway",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "gateway-v0.3.25",
+      "digest": "sha256:25acc9d281250d19c83974c3d66530a1c978e011bc7f53f82740161f2ffa6b80",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "cc85b438ff84da4c970d5cec7998f0af87200e4696946dfc555255b65a9a1feb",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:25acc9d281250d19c83974c3d66530a1c978e011bc7f53f82740161f2ffa6b80"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "1c1fdebee9c1608725dd2f46113b4b24f814e63d",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+      "runID": "43325594657",
+      "attempt": "1",
+      "service": "member-api",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "member-api-v0.3.24",
+      "digest": "sha256:22ff0ddbc497514cc4cc2487d4faf9dedadd137d673bb5c569fcd31ba1d71747",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "1e07b3205912cadd9b6ad51651297c05364c867c308f1c9a91500208c7d729d0",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:22ff0ddbc497514cc4cc2487d4faf9dedadd137d673bb5c569fcd31ba1d71747"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "1c1fdebee9c1608725dd2f46113b4b24f814e63d",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+      "runID": "43325594657",
+      "attempt": "1",
+      "service": "payment-api",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "payment-api-v0.3.26",
+      "digest": "sha256:628ec05ef0c6da14f8e22a1693538facb364548c2badeccad64d9542c4748fb4",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "751bfa60471b496f181957280a1b93f2fc06e0927a91e5f457bc14a76bbe84de",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:628ec05ef0c6da14f8e22a1693538facb364548c2badeccad64d9542c4748fb4"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "1c1fdebee9c1608725dd2f46113b4b24f814e63d",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+      "runID": "43325594657",
+      "attempt": "1",
+      "service": "payment-rpc",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "payment-rpc-v0.3.19",
+      "digest": "sha256:872fa44422eb3ded19d912cd224e1d060f44702e43abd643b714c9965a1e08de",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "8aa4610376f87e9ef9c3113ec7fd22bbdabd2875455dbfd6cad25b170a415975",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:872fa44422eb3ded19d912cd224e1d060f44702e43abd643b714c9965a1e08de"
+      }
+    }
+  ]
+}
