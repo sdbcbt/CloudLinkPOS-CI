@@ -1,7 +1,16 @@
 
+### 派发者限制
+
+`build-pos-release.yml`、`private-main.yml`（经 `full-version-build.yml`）、`full-version-build.yml`、`miniprogram-upload.yml`、`private-quality.yml` 只接受通知机器人 `cloudlinkpos-ci-notifier[bot]` 派发（2026-11-12 用户决定）：首个作业的第一步核对 `github.actor`，任何人在 Actions 页面手动 Run workflow 都会在该步失败，后续作业不会执行。
+
+- 失败批次使用 **Re-run all jobs** 重跑：重跑时 `github.actor` 仍是原派发者，照常执行。
+- 需要新的构建：合并私库 main，由 Webhook → Cloudflare Worker 自动派发；Worker 已接收但未派发的任务按 ID 在 Worker 重试。
+- `pilot-image.yml` 是固定提交的试点工作流，不在 Worker 派发范围内，不受此限制。
+- 离线检查：`python3 ci/dispatch-guard_test.py`。
+
 ### 主线构建与全局发布模式
 
-`private-main.yml` 调用 `full-version-build.yml`，按私库推送前后提交识别受影响服务。手动触发时 `services` 默认 `changed`；个别服务构建失败需要补建时，用同一 `before`/`after` 重新触发并把 `services` 填为逗号分隔的失败服务名（如 `inventory-rpc,iot-rpc`），只构建这些服务，不重建其他服务（每次构建都会生成新版本号）。补建批次只写入 `builds/` 与 `catalog.json`，不写 `sources/<提交>.json`，避免以部分服务冒充该提交的整批 PR 收据。构建只推送版本号和 latest，不生成 SHA 标签。每个成功服务的私有访问证据与整批计划核对后，由 `ci/publish-receipts.py` 将白名单元数据写入 `source-build-receipts` 分支；源码、日志和凭据不进入该分支。收据文件存在不代表工作流已结束，生产发布服务还必须核对具体 run/attempt 的最终成功结果。
+`private-main.yml` 调用 `full-version-build.yml`，按私库推送前后提交识别受影响服务。`services` 默认 `changed`；`services` 填逗号分隔的服务名（如 `inventory-rpc,iot-rpc`）时只构建这些服务（每次构建都会生成新版本号），该入口只能由通知机器人派发，见下方「派发者限制」。补建批次只写入 `builds/` 与 `catalog.json`，不写 `sources/<提交>.json`，避免以部分服务冒充该提交的整批 PR 收据。构建只推送版本号和 latest，不生成 SHA 标签。每个成功服务的私有访问证据与整批计划核对后，由 `ci/publish-receipts.py` 将白名单元数据写入 `source-build-receipts` 分支；源码、日志和凭据不进入该分支。收据文件存在不代表工作流已结束，生产发布服务还必须核对具体 run/attempt 的最终成功结果。
 
 生产后台的全局发布模式保存在私库 Fleet 清单的 `releasePolicy`。受管清单迁到 Fleet 专用部署分支 `fleet-deploy-do-not-delete`（该分支严禁删除）后，主线清单冻结；构建计划同时读取主线与部署分支两份清单，取 `generation` 较高的策略，迁移前后都无需额外开关。关闭时，生产服务核验本批构建成功、策略代次一致、正式版本就绪及源码未倒退后，使用生产专用 GitHub App 更新私库清单，由 Fleet 发布；开启时保留待灰度版本，公开 CI 不能绕过。进行中的任务、候选基础设施及灰度页面不会因关闭开关被删除。公开 CI 不持有私库源码或部署清单写入凭据。
 
@@ -16,7 +25,7 @@
 
 Windows / Android 在本公开仓库的 [收银客户端永久版本构建](https://github.com/sdbcbt/CloudLinkPOS-CI/actions/workflows/build-pos-release.yml) 工作流执行，并将安装包、`release-manifest.json` 和 `SHA256SUMS.txt` 发布到 [GitHub Releases](https://github.com/sdbcbt/CloudLinkPOS-CI/releases)。Windows 同时保留中文安装向导与便携 ZIP；下载附件不依赖 Actions Artifact 保留期限。历史私库 Releases 不删除、不覆盖。
 
-私库 main 推送由现有 Cloudflare Worker 单独派发客户端任务，工作流按 before/after 识别 POS 与打包路径；无客户端改动不编译。手动执行输入已合并私库 main 第一父链的完整 `source_sha`，选择 `all`、`windows` 或 `android`，`before_sha` 留空；自动范围重放选择 `changed`，同时填写已核对的 `before_sha`。源码由既有 App 短期只读令牌静默读取，不向公开日志、仓库或 Artifact 上传源码及私库构建日志。
+私库 main 推送由现有 Cloudflare Worker 单独派发客户端任务，工作流按 before/after 识别 POS 与打包路径；无客户端改动不编译。输入为已合并私库 main 第一父链的完整 `source_sha`；`platform` 为 `all`、`windows`、`android`，或配合 `before_sha` 的 `changed`。只接受通知机器人派发，见「派发者限制」。源码由既有 App 短期只读令牌静默读取，不向公开日志、仓库或 Artifact 上传源码及私库构建日志。
 
 收银构建的首个失败输出仅独占暂存在 Runner 临时目录；POSIX 文件权限为 `0600`，Windows 使用任务隔离临时目录。失败时复用既有 CI App 的 `contents:read` 与 `checks:write` 短期令牌，仅向私库 `sdbcbt/CloudLinkPOS` 对应固定提交创建平台失败 CheckRun，不授予私库 contents 写入权限。报告会复核 plan、当前检出 SHA 和已读取 main 首父历史，替换四项签名 Secrets 与令牌原值后，仅保留最多 24KB 末尾；详情只在私库可见，不进入公开 Summary 或 Artifact。清理失败不会覆盖首个失败，任何回写错误也不输出日志、API 响应或凭据。
 
