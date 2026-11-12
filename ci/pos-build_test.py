@@ -281,6 +281,36 @@ class SigningTests(unittest.TestCase):
                 build.verify_signer(output)
 
 
+class AndroidUpgradeTests(unittest.TestCase):
+    def test_new_source_embeds_runtime_trust_and_packages_verified_apk(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            helper = root / 'dev/packaging/build_android_upgrade.py'
+            helper.parent.mkdir(parents=True)
+            helper.touch()
+            tools = root / 'sdk/build-tools/36.0.0'
+            tools.mkdir(parents=True)
+            (tools / 'apksigner').touch()
+            trust = {'POS_UPGRADE_PUBLIC_KEY': 'synthetic-public', 'POS_UPGRADE_PERMIT_PUBLIC_KEY': 'synthetic-permit',
+                     'POS_UPGRADE_SIGNING_IDENTITY': build.ANDROID_SIGNER_CERT_SHA256, 'POS_UPGRADE_FLAVOR': 'production'}
+            upgrade = Mock()
+            upgrade.trust_defines.return_value = trust
+            verifier = Mock()
+            signature = ('Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n').encode()
+            env = {'POS_VERSION': '1.0.2000', 'POS_BUILD_NUMBER': '2000', 'POS_SOURCE_SHA': 'a' * 40,
+                   'ANDROID_HOME': str(root / 'sdk'), 'GITHUB_ENV': str(root / 'env')}
+            with patch.object(build, 'ROOT', root), patch.dict(os.environ, env), \
+                    patch.object(build, 'module', side_effect=[upgrade, verifier]), \
+                    patch.object(build, 'run', side_effect=[signature, b"sdkVersion:'24'\n"]), \
+                    patch.object(build, 'flutter') as flutter:
+                build.android()
+                for key, value in trust.items():
+                    self.assertIn('--dart-define=' + key + '=' + value, flutter.call_args.args)
+                    self.assertEqual(os.environ['ORG_GRADLE_PROJECT_' + key], value)
+                upgrade.package.assert_called_once()
+                self.assertEqual(build.SUBSTAGE, 'android.upgrade_manifest')
+
+
 class WorkflowTests(unittest.TestCase):
     def test_public_pos_workflow_has_no_source_artifacts_or_write_source_token(self):
         import yaml
