@@ -34,6 +34,16 @@ jobs:
       context: "${{ steps.init.outputs.context }}"
       checks: "${{ steps.init.outputs.checks }}"
     steps:
+    - name: 核验派发者为通知机器人
+      # 发布与检查只接受私库 Webhook → Cloudflare Worker 的通知机器人派发（2026-11-12 用户决定），
+      # 任何人手动运行都在此处失败。重跑时 github.actor 仍为原派发者，可照常“Re-run all jobs”。
+      env:
+        DISPATCH_ACTOR: ${{ github.actor }}
+      run: |
+        if [[ "$DISPATCH_ACTOR" != "cloudlinkpos-ci-notifier[bot]" ]]; then
+          echo "::error::本工作流只接受通知机器人 cloudlinkpos-ci-notifier[bot] 派发，当前触发者：$DISPATCH_ACTOR。需要补发请合并私库 main 或通过通知 Worker 重试。"
+          exit 1
+        fi
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       with:
         path: automation
