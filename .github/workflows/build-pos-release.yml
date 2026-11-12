@@ -163,8 +163,18 @@ jobs:
         run: |
           python automation/ci/pos-build.py windows
           python automation/ci/pos-build.py installer
+      - name: 准备安卓签名清单 Go 工具链
+        if: matrix.platform == 'android'
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.26.5'
+          cache: false
       - name: 静默构建并核验固定正式签名安卓安装包
         if: matrix.platform == 'android'
+        env:
+          POS_UPGRADE_PUBLIC_KEY: ${{ vars.POS_UPGRADE_PUBLIC_KEY }}
+          POS_UPGRADE_PERMIT_PUBLIC_KEY: ${{ vars.POS_UPGRADE_PERMIT_PUBLIC_KEY }}
+          POS_RELEASE_SIGNING_KEY: ${{ secrets.POS_RELEASE_SIGNING_KEY }}
         run: python3 automation/ci/pos-build.py android
       - name: 生成源码版本清单和 SHA-256
         run: python automation/ci/pos-build.py package

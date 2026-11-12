@@ -159,8 +159,16 @@ def installer():
 def android():
     global SUBSTAGE
     SUBSTAGE = 'android.compile'
+    # 兼容尚未包含升级打包入口的旧固定源码，先合并 CI 不会破坏旧版构建。
+    helper = ROOT / 'dev/packaging/build_android_upgrade.py'
+    upgrade = module('build_android_upgrade', helper) if helper.is_file() else None
+    trust = upgrade.trust_defines(os.environ) if upgrade else {}
+    # Gradle 项目属性与 Dart define 使用同一组公钥和正式签名身份。
+    for key, value in trust.items():
+        os.environ['ORG_GRADLE_PROJECT_' + key] = value
     flutter('build', 'apk', '--release', '--no-pub', '--build-name', os.environ['POS_VERSION'],
-            '--build-number', os.environ['POS_BUILD_NUMBER'], '--dart-define=POS_SOURCE_SHA=' + os.environ['POS_SOURCE_SHA'])
+            '--build-number', os.environ['POS_BUILD_NUMBER'], '--dart-define=POS_SOURCE_SHA=' + os.environ['POS_SOURCE_SHA'],
+            *['--dart-define=' + key + '=' + value for key, value in trust.items()])
     SUBSTAGE = 'android.signing_tools'
     tools = Path(os.environ['ANDROID_HOME']) / 'build-tools'
     versions = sorted((path for path in tools.iterdir() if re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', path.name) and (path / 'apksigner').is_file()),
@@ -181,6 +189,10 @@ def android():
     badging = run([str(versions[-1] / 'aapt'), 'dump', 'badging', str(apk)]).decode()
     verifier = module('verify_android_version', ROOT / 'dev/packaging/verify_android_version.py')
     verifier.verify(badging, os.environ['POS_VERSION'], int(os.environ['POS_BUILD_NUMBER']))
+    if not upgrade:
+        return
+    SUBSTAGE = 'android.upgrade_manifest'
+    upgrade.package(apk, versions[-1], badging, run=lambda args, **kwargs: run(args, cwd=kwargs['cwd']))
 
 
 def verify_signer(output):
