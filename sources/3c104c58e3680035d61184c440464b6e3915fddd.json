@@ -1,0 +1,61 @@
+{
+  "sourceSHA": "3c104c58e3680035d61184c440464b6e3915fddd",
+  "beforeSHA": "ef88205ff89d6f149855ad819cf86984389c3c7c",
+  "expectedServices": [
+    "admin",
+    "iot-api"
+  ],
+  "publicationPolicy": {
+    "grayRequired": false,
+    "generation": 11
+  },
+  "schema": "cloudlinkpos.public-source-build/v1",
+  "sourceRepository": "sdbcbt/CloudLinkPOS",
+  "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+  "runID": "43223104240",
+  "attempt": "1",
+  "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+  "workflowPath": ".github/workflows/private-main.yml",
+  "receipts": [
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "3c104c58e3680035d61184c440464b6e3915fddd",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+      "runID": "43223104240",
+      "attempt": "1",
+      "service": "admin",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "admin-v0.3.46",
+      "digest": "sha256:8b01cd1ed84c764d7485317cef4dffafe04c22f0f4e2565753eaacb0cc925ed1",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "e989406abf3f8e3ffd1b42797715d0cef4ea8771cf323611d428c335356feaf3",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:8b01cd1ed84c764d7485317cef4dffafe04c22f0f4e2565753eaacb0cc925ed1"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "3c104c58e3680035d61184c440464b6e3915fddd",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+      "runID": "43223104240",
+      "attempt": "1",
+      "service": "iot-api",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "iot-api-v0.3.30",
+      "digest": "sha256:7b15b1a6d0d679adae4ed95a4c30a7a50f67d7a1da6098303d8f1ebcd30694ce",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "6a7b193d1f9440e155ddc9b1453c2d85c7c635e8513662778b2b630195180653",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:7b15b1a6d0d679adae4ed95a4c30a7a50f67d7a1da6098303d8f1ebcd30694ce"
+      }
+    }
+  ]
+}
