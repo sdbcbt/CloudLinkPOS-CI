@@ -1,4 +1,14 @@
 
+### 飞书研发助手 Codex Cloud 调度（待启用）
+
+独立工作流 `codex-cloud-dispatch.yml` 只接受专用 GitHub App 的 `cloudlinkpos-cloud-dispatch[bot]` 从 `main` 派发，公开输入只有不透明 `job_id`；没有 Worker broker、独立 App 与密钥时失败关闭。此 App 仅需公开 CI 仓库 Actions 写权限，不能复用原通知 App。Runner 从受保护 Worker 领取固定私库提交和专用分支、短期私库 Contents/PR 写令牌及 AES-GCM 加密的 Codex 登录态；密钥仅在 Actions Secret。任务使用官方 `@openai/codex@0.163.0` 的 Cloud CLI，公开日志、产物和步骤输出不含消息、源码、diff、云端标题和 URL；不检出私库、不执行私库脚本、不合并、不部署。
+
+配置：公开仓库变量 `CLOUD_BROKER_URL`（HTTPS Worker 基址）；公开仓库 Secrets `CLOUD_BROKER_SECRET`（独立随机 HMAC 共享密钥）及 `CODEX_LOGIN_KEY`（32 字节随机值的 base64，真人授权后初始化同密钥下的 Worker D1 加密登录态）。Worker 配置专用调度 App 身份、Cloud 环境 ID、私库内容与 PR 专用 App 和领取 broker 的同一 HMAC 密钥。准备完毕后仍需先人工验证真实 Cloud 环境、App 权限及 Auth CAS；启用开关在 Worker，不能仅因文件部署而自动启用。
+
+领取与回报采用 `POST /cloud/claim`、`POST /cloud/report`；签名为 `HMAC-SHA256(secret, timestamp + '.' + nonce + '.' + rawBody)`，时间戳秒，nonce 一次性且 120 秒有效，Worker 必须保存 nonce 防重放，并核对 job/run/lease、报告 revision。Runner `auth` 阶段使用版本 CAS 回写刷新后的密文。提交失败或结果未知停止而非重提。Cloud `ready` 不是测试通过：Cloud diff 必须含结构化临时报告且报告身份、决定、证据和检查结果有效；报告文件不进入 PR。变更限 24 个安全文本文件、1 MiB；使用 git numstat -z 解析路径并在独立空目录应用。只有实际源码变更才建草稿 PR；独立审阅请求由 Worker 幂等发出并读取实际 reviews/checks，评论不代表审阅完成，人工合并及生产边界不变。本次用户授权 Codex Cloud 编码，不等于授权自动合并或部署。
+
+离线检查：`node ci/codex-cloud-dispatch.test.mjs`。工作流真实派发、登录、环境与 GitHub 发布需主 Agent 后续以专用凭据验收；离线测试不连接外部服务。
+
 ### 派发者限制
 
 `build-pos-release.yml`、`private-main.yml`（经 `full-version-build.yml`）、`full-version-build.yml`、`miniprogram-upload.yml`、`private-quality.yml` 只接受通知机器人 `cloudlinkpos-ci-notifier[bot]` 派发（2026-11-12 用户决定）：首个作业的第一步核对 `github.actor`，任何人在 Actions 页面手动 Run workflow 都会在该步失败，后续作业不会执行。
