@@ -7,6 +7,8 @@
 
 领取与回报采用 `POST /cloud/claim`、`POST /cloud/report`；签名为 `HMAC-SHA256(secret, timestamp + '.' + nonce + '.' + rawBody)`，时间戳秒，nonce 一次性且 120 秒有效，Worker 必须保存 nonce 防重放，并核对 job/run/lease、报告 revision。Runner `auth` 阶段使用版本 CAS 回写刷新后的密文。提交失败或结果未知停止而非重提。Cloud `ready` 不是测试通过：Cloud diff 必须含结构化临时报告且报告身份、决定、证据和检查结果有效；报告文件不进入 PR。变更限 24 个安全文本文件、1 MiB；使用 git numstat -z 解析路径并在独立空目录应用。只有实际源码变更才建草稿 PR；独立审阅请求由 Worker 幂等发出并读取实际 reviews/checks，评论不代表审阅完成，人工合并及生产边界不变。本次用户授权 Codex Cloud 编码，不等于授权自动合并或部署。
 
+当前专用 App 已限制安装本仓，两个 CI Secret 与 `CLOUD_BROKER_URL` 已配置；独立官方 ChatGPT 登录已完成并加密初始化到 Worker D1。自动派发仍关闭，完整工作流须待人工合并进入 main 后验收。
+
 离线检查：`node ci/codex-cloud-dispatch.test.mjs`。工作流真实派发、登录、环境与 GitHub 发布需主 Agent 后续以专用凭据验收；离线测试不连接外部服务。
 
 ### 派发者限制

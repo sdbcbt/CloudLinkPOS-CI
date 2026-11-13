@@ -1,8 +1,9 @@
 import { strict as assert } from 'node:assert';
 import { createHash, randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { applyPatch, assertPath, decryptAuth, encryptAuth, findTask, inspectPatch, signedHeaders, validateReport, verifySignature, publishDraft, readFixedFile, readCloudList, main } from './codex-cloud-dispatch.mjs';
 
@@ -207,6 +208,51 @@ test('claim 后解密失败回报受保护原因，不泄露登录密钥且不�
   } finally {
     globalThis.fetch = old;
     for (const [name, value] of Object.entries(previous)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+  }
+});
+
+test('真实 main 接线：模拟 CLI 和 broker 完成 submit、翻页 list、polling，且查询以 -- 分隔', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'clp-cloud-test-'));
+  const cli = join(directory, 'codex');
+  const calls = join(directory, 'calls.jsonl');
+  writeFileSync(cli, `#!/usr/bin/env node
+const fs=require('node:fs');
+fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(process.argv.slice(2))+'\\n');
+const args=process.argv.slice(2);
+if(args[1]==='exec') { if(args.at(-2)!=='--'||!args.at(-1).startsWith('-')) process.exit(42); console.log('https://chatgpt.com/codex/tasks/task_12345'); }
+else if(args[1]==='list') console.log(JSON.stringify(args.includes('--cursor')?{tasks:[{id:'task_12345',status:'pending',environment_id:'env-test'}]}:{tasks:[],cursor:'page-2'}));
+else process.exit(43);
+`);
+  chmodSync(cli, 0o700);
+  const previous = Object.fromEntries(['CLOUD_JOB_ID', 'GITHUB_RUN_ID', 'CLOUD_BROKER_URL', 'CLOUD_BROKER_SECRET', 'CODEX_LOGIN_KEY', 'PATH'].map(name => [name, process.env[name]]));
+  const oldFetch = globalThis.fetch;
+  const phases = [];
+  const id = '00000000-0000-4000-8000-000000000003';
+  const key = randomBytes(32);
+  const auth = { version: 1, ...encryptAuth(Buffer.from('{}'), key) };
+  Object.assign(process.env, { CLOUD_JOB_ID: id, GITHUB_RUN_ID: '456', CLOUD_BROKER_URL: 'https://broker.test', CLOUD_BROKER_SECRET: 'synthetic-broker-secret-minimum-32-characters', CODEX_LOGIN_KEY: key.toString('base64'), PATH: `${directory}:${previous.PATH || ''}` });
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    if (url.endsWith('/cloud/claim')) return Response.json({ job: { ...job, id, operation: 'submit', cloud_task_id: '', query: '-查询必须是正文' }, lease_id: '00000000-0000-4000-8000-000000000004', private_token: 'synthetic-token-12345678901234567890', auth });
+    phases.push(body);
+    return Response.json({ status: body.phase });
+  };
+  try {
+    let clock = 0;
+    await main({ now: () => clock, sleep: async ms => { clock += ms; phases.push({ phase: 'sleep' }); } });
+    assert.equal(phases[0].phase, 'started');
+    assert.equal(phases.at(-1).phase, 'polling');
+    assert.equal(phases.filter(x => x.phase === 'sleep').length, 24);
+    const invoked = readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(invoked[0].at(-2), '--');
+    assert.equal(invoked[0].at(-1), '-查询必须是正文');
+    assert.ok(invoked.slice(1).every(x => x.slice(0, 3).join(' ') === 'cloud list --json'));
+    assert.deepEqual(invoked[2].slice(-2), ['--cursor', 'page-2']);
+    assert.equal(phases.at(-1).cloud_task_id, 'task_12345');
+  } finally {
+    globalThis.fetch = oldFetch;
+    for (const [name, value] of Object.entries(previous)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

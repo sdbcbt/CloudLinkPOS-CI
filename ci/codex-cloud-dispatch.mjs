@@ -310,7 +310,7 @@ export function readCloudList(id, environment, run = command) {
   throw Error('云端任务暂不可见');
 }
 
-export async function main() {
+export async function main({ sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now } = {}) {
   const env = process.env;
   if (!JOB_ID.test(env.CLOUD_JOB_ID || '') || !/^\d{1,20}$/.test(env.GITHUB_RUN_ID || '') || !/^https:\/\/[^/?#]+$/.test(env.CLOUD_BROKER_URL || '') || !env.CLOUD_BROKER_SECRET || !/^[a-zA-Z0-9+/]{43}=$/.test(env.CODEX_LOGIN_KEY || '')) throw Error('配置不足');
   const key = Buffer.from(env.CODEX_LOGIN_KEY, 'base64');
@@ -367,15 +367,15 @@ export async function main() {
     if (job.operation === 'submit') {
       ambiguous = true;
       // exec 非幂等：CLI 超时和任何提交错误均为 unknown，不自动重试。
-      const output = runCloud(['cloud', 'exec', '--env', job.environment_id, '--branch', job.branch, job.query], { timeout: 180_000 });
+      const output = runCloud(['cloud', 'exec', '--env', job.environment_id, '--branch', job.branch, '--', job.query], { timeout: 180_000 });
       taskId = cloudTaskId(output.toString('utf8').trim());
       await refreshAuth();
       await report('started', { cloud_task_id: taskId });
       ambiguous = false;
     } else if (!TASK_ID.test(taskId || '')) throw Error('缺少可轮询的任务 ID');
-    const deadline = Date.now() + 18 * 60_000;
-    while (Date.now() < deadline) {
-      const task = readCloudList(taskId, job.environment_id, runCloud);
+    const deadline = now() + 18 * 60_000;
+    while (now() < deadline) {
+      const task = readCloudList(taskId, job.environment_id, (_program, args, options) => runCloud(args, options));
       await refreshAuth();
       if (task.status === 'ready') {
         const patch = runCloud(['cloud', 'diff', taskId], { maxBuffer: MAX_PATCH + 65536, timeout: 60_000 });
@@ -405,7 +405,7 @@ export async function main() {
         await report('reconcile', { cloud_task_id: taskId });
         return;
       }
-      await new Promise(r => setTimeout(r, 45_000));
+      await sleep(45_000);
     }
     await report('polling', { cloud_task_id: taskId });
   } catch (error) {
