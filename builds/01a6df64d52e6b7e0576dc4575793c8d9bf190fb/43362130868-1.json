@@ -1,0 +1,40 @@
+{
+  "sourceSHA": "01a6df64d52e6b7e0576dc4575793c8d9bf190fb",
+  "beforeSHA": "efacd45def8b4680c9bb448b87a30531e12ab9e5",
+  "expectedServices": [
+    "paywechat-rpc"
+  ],
+  "publicationPolicy": {
+    "grayRequired": false,
+    "generation": 11
+  },
+  "schema": "cloudlinkpos.public-source-build/v1",
+  "sourceRepository": "sdbcbt/CloudLinkPOS",
+  "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+  "runID": "43362130868",
+  "attempt": "1",
+  "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+  "workflowPath": ".github/workflows/private-main.yml",
+  "receipts": [
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "01a6df64d52e6b7e0576dc4575793c8d9bf190fb",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+      "runID": "43362130868",
+      "attempt": "1",
+      "service": "paywechat-rpc",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "paywechat-rpc-v0.1.3",
+      "digest": "sha256:c38d8dfa900ea5dfe53d9c17ae4536017c9367a33604cad9273bd64dba281409",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "787894424926297adc3e90b3a58f8033225e3a4103f5a03b1a15a9c17a6686ab",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:c38d8dfa900ea5dfe53d9c17ae4536017c9367a33604cad9273bd64dba281409"
+      }
+    }
+  ]
+}
