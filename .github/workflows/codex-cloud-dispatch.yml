@@ -1,0 +1,45 @@
+---
+name: 飞书 Codex Cloud 隔离调度
+'on':
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 不透明任务编号，原文从受保护 Worker 领取
+        type: string
+        required: true
+permissions: {}
+concurrency:
+  group: codex-cloud-account
+  cancel-in-progress: false
+  queue: max
+jobs:
+  dispatch:
+    if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+    - name: 核验专用调度应用和任务编号
+      env:
+        DISPATCH_ACTOR: ${{ github.actor }}
+        OPAQUE_JOB_ID: ${{ inputs.job_id }}
+      run: |
+        if [[ "$DISPATCH_ACTOR" != 'cloudlinkpos-cloud-dispatch[bot]' || ! "$OPAQUE_JOB_ID" =~ ^[A-Za-z0-9_-]{8,128}$ ]]; then
+          printf '%s\n' '调度者或编号无效；工作流拒绝运行。' >&2
+          exit 1
+        fi
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      with:
+        path: automation
+        persist-credentials: false
+    - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903
+      with:
+        node-version: '22.20.0'
+    - name: 安装固定版本官方 Codex CLI
+      run: npm install --global --ignore-scripts --no-audit --no-fund @openai/codex@0.163.0
+    - name: 领取任务、调用云端并回传安全状态
+      env:
+        CLOUD_JOB_ID: ${{ inputs.job_id }}
+        CLOUD_BROKER_URL: ${{ vars.CLOUD_BROKER_URL }}
+        CLOUD_BROKER_SECRET: ${{ secrets.CLOUD_BROKER_SECRET }}
+        CODEX_LOGIN_KEY: ${{ secrets.CODEX_LOGIN_KEY }}
+      run: node automation/ci/codex-cloud-dispatch.mjs
