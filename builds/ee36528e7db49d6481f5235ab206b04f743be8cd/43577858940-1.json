@@ -1,0 +1,61 @@
+{
+  "sourceSHA": "ee36528e7db49d6481f5235ab206b04f743be8cd",
+  "beforeSHA": "26c2e1e7ea2bd7aa0686aa0ab77ccc1179058d94",
+  "expectedServices": [
+    "permission-api",
+    "seed-routes"
+  ],
+  "publicationPolicy": {
+    "grayRequired": false,
+    "generation": 11
+  },
+  "schema": "cloudlinkpos.public-source-build/v1",
+  "sourceRepository": "sdbcbt/CloudLinkPOS",
+  "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+  "runID": "43577858940",
+  "attempt": "1",
+  "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+  "workflowPath": ".github/workflows/private-main.yml",
+  "receipts": [
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "ee36528e7db49d6481f5235ab206b04f743be8cd",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+      "runID": "43577858940",
+      "attempt": "1",
+      "service": "permission-api",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "permission-api-v0.3.37",
+      "digest": "sha256:61b0192169f92d9c1c84df2aedecddae42868e08968d84620410a9fe1bdb3c94",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "12a7bb9f9825b8814a7475a07f3abdef4d9d972cea581c07d46d3d00a1edf95a",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:61b0192169f92d9c1c84df2aedecddae42868e08968d84620410a9fe1bdb3c94"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "ee36528e7db49d6481f5235ab206b04f743be8cd",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "42b67de858e8bb9afeeaa0f0e53da4989dd1b627",
+      "runID": "43577858940",
+      "attempt": "1",
+      "service": "seed-routes",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "seed-routes-v0.3.26",
+      "digest": "sha256:73c663c0ef91395144001cad6ea3dc440fd03b9a92c9f6ca08a71b9560a350db",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "3c76b4002f42df42160a2dcb38765e3fb902b328ec63409713b81c88f8819919",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:73c663c0ef91395144001cad6ea3dc440fd03b9a92c9f6ca08a71b9560a350db"
+      }
+    }
+  ]
+}
