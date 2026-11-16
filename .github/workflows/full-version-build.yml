@@ -26,10 +26,6 @@ on:
         default: false
         type: boolean
 permissions: {}
-concurrency:
-  group: full-version-publication
-  cancel-in-progress: false
-  queue: max
 jobs:
   plan:
     if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/main'
@@ -95,7 +91,13 @@ jobs:
     if: needs.plan.outputs.has_services == 'true'
     needs: plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # 推送单次最长 30 分钟、最多 2 次，留足余量。
+    timeout-minutes: 90
+    # 按服务串行：同一服务的版本号计算与推送不并发，不同服务、无需构建的运行互不等待。
+    concurrency:
+      group: full-version-publication-${{ matrix.service }}
+      cancel-in-progress: false
+      queue: max
     strategy:
       fail-fast: false
       max-parallel: 12
@@ -166,6 +168,11 @@ jobs:
     needs: [plan, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # 收据分支以非强制方式更新，多个运行同时写入会互相拒绝，因此单独串行。
+    concurrency:
+      group: full-version-receipts
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
       actions: read
