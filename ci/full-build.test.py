@@ -170,5 +170,34 @@ class Retry(unittest.TestCase):
             self.assertEqual(seen, [False, False])
 
 
+class PushTimeout(unittest.TestCase):
+    def test_timeout_becomes_retryable_stage_failure(self):
+        import subprocess
+        with patch.object(BUILD.subprocess, 'run', side_effect=subprocess.TimeoutExpired('docker', 1)):
+            with self.assertRaises(RuntimeError):
+                BUILD.run(['docker', 'push', 'x'], timeout=1)
+
+    def test_push_is_retried_with_timeout(self):
+        source = Path(__file__).with_name('full-build.py').read_text()
+        self.assertIn("retry(STAGE, lambda: run(['docker', 'push', IMAGE + ':' + version], env=env, timeout=PUSH_TIMEOUT_SECONDS), (RuntimeError,))", source)
+        self.assertLessEqual(BUILD.PUSH_TIMEOUT_SECONDS * BUILD.RETRY_ATTEMPTS, 80 * 60)
+
+
+class Concurrency(unittest.TestCase):
+    def test_queue_is_per_service_not_whole_workflow(self):
+        import yaml
+        workflow = yaml.safe_load((Path(__file__).parents[1] / '.github/workflows/full-version-build.yml').read_text())
+        self.assertNotIn('concurrency', workflow)
+        build = workflow['jobs']['build']['concurrency']
+        self.assertEqual(build['group'], 'full-version-publication-${{ matrix.service }}')
+        self.assertFalse(build['cancel-in-progress'])
+        self.assertEqual(build['queue'], 'max')
+        receipts = workflow['jobs']['publish-receipts']['concurrency']
+        self.assertEqual(receipts['group'], 'full-version-receipts')
+        self.assertEqual(receipts['queue'], 'max')
+        self.assertNotIn('concurrency', workflow['jobs']['plan'])
+        self.assertGreaterEqual(workflow['jobs']['build']['timeout-minutes'], 90)
+
+
 if __name__ == '__main__':
     unittest.main()

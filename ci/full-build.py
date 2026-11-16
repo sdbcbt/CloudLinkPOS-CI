@@ -24,10 +24,13 @@ DEPLOY_BRANCH = 'fleet-deploy-do-not-delete'
 DEPLOY_MANIFEST = ROOT.parent / 'fleet-deploy-manifest.yaml'
 
 
-# 推送前的网络步骤（读源码、读私库标签、拉基础镜像、编译）遇到偶发网络故障时重试；
-# 推送与回读不重试，避免同一服务生成两个版本号。
+# 推送前的网络步骤（读源码、读私库标签、拉基础镜像、编译）遇到偶发网络故障时重试。
+# docker push 也重试：重推的是同一个已确定的版本标签和同一镜像，不会生成第二个版本号；
+# 版本号计算与回读核验不重复执行。
 RETRY_ATTEMPTS = 2  # 总共最多 2 次：失败后只再试 1 次
 RETRY_WAIT_SECONDS = 30
+# 跨境推送到张家口 ACR 偶发极慢，单次推送超过此时长即中止并重推。
+PUSH_TIMEOUT_SECONDS = 30 * 60
 SLEEP = time.sleep
 
 
@@ -42,8 +45,11 @@ def retry(stage, action, retryable=(Exception,)):
             SLEEP(RETRY_WAIT_SECONDS * attempt)
 
 
-def run(args, cwd=None, env=None, data=None):
-    result = subprocess.run(args, cwd=cwd, env=env, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(args, cwd=None, env=None, data=None, timeout=None):
+    try:
+        result = subprocess.run(args, cwd=cwd, env=env, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError('阶段超时')
     if result.returncode:
         raise RuntimeError('阶段失败')
     return result.stdout
@@ -228,7 +234,7 @@ def build(service):
             STAGE = '发布并回读固定版本'
             print(STAGE, flush=True)
             run(['docker', 'tag', 'local-fullbuild:build', IMAGE + ':' + version], env=env)
-            log = run(['docker', 'push', IMAGE + ':' + version], env=env).decode()
+            log = retry(STAGE, lambda: run(['docker', 'push', IMAGE + ':' + version], env=env, timeout=PUSH_TIMEOUT_SECONDS), (RuntimeError,)).decode()
             found = re.findall(r'digest: (sha256:[0-9a-f]{64})', log)
             if not found:
                 raise ValueError('缺少推送摘要')
