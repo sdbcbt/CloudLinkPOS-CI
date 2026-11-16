@@ -179,8 +179,20 @@ class PushTimeout(unittest.TestCase):
 
     def test_push_is_retried_with_timeout(self):
         source = Path(__file__).with_name('full-build.py').read_text()
-        self.assertIn("retry(STAGE, lambda: run(['docker', 'push', IMAGE + ':' + version], env=env, timeout=PUSH_TIMEOUT_SECONDS), (RuntimeError,))", source)
-        self.assertLessEqual(BUILD.PUSH_TIMEOUT_SECONDS * BUILD.RETRY_ATTEMPTS, 80 * 60)
+        self.assertIn("retry(STAGE, lambda: run(['docker', 'push', IMAGE + ':' + version], env=env, timeout=PUSH_TIMEOUT_SECONDS), (RuntimeError,), PUSH_ATTEMPTS)", source)
+        self.assertEqual(BUILD.PUSH_TIMEOUT_SECONDS, 5 * 60)
+        self.assertEqual(BUILD.PUSH_ATTEMPTS, 3)
+
+    def test_push_attempts_override_default_limit(self):
+        calls = []
+
+        def broken():
+            calls.append(1)
+            raise RuntimeError('超时')
+        with patch.object(BUILD, 'SLEEP', lambda _: None):
+            with self.assertRaises(RuntimeError):
+                BUILD.retry('推送', broken, (RuntimeError,), BUILD.PUSH_ATTEMPTS)
+        self.assertEqual(len(calls), 3)
 
 
 class Concurrency(unittest.TestCase):
@@ -196,7 +208,7 @@ class Concurrency(unittest.TestCase):
         self.assertEqual(receipts['group'], 'full-version-receipts')
         self.assertEqual(receipts['queue'], 'max')
         self.assertNotIn('concurrency', workflow['jobs']['plan'])
-        self.assertGreaterEqual(workflow['jobs']['build']['timeout-minutes'], 90)
+        self.assertEqual(workflow['jobs']['build']['timeout-minutes'], 60)
 
 
 if __name__ == '__main__':
