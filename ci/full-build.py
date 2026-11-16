@@ -29,17 +29,19 @@ DEPLOY_MANIFEST = ROOT.parent / 'fleet-deploy-manifest.yaml'
 # 版本号计算与回读核验不重复执行。
 RETRY_ATTEMPTS = 2  # 总共最多 2 次：失败后只再试 1 次
 RETRY_WAIT_SECONDS = 30
-# 跨境推送到张家口 ACR 偶发极慢，单次推送超过此时长即中止并重推。
-PUSH_TIMEOUT_SECONDS = 30 * 60
+# 镜像不大，正常推送远低于 5 分钟；超过即视为卡住，中止并以同一版本标签重推。
+PUSH_TIMEOUT_SECONDS = 5 * 60
+PUSH_ATTEMPTS = 3  # 推送总共最多 3 次
 SLEEP = time.sleep
 
 
-def retry(stage, action, retryable=(Exception,)):
-    for attempt in range(1, RETRY_ATTEMPTS + 1):
+def retry(stage, action, retryable=(Exception,), attempts=None):
+    attempts = attempts or RETRY_ATTEMPTS
+    for attempt in range(1, attempts + 1):
         try:
             return action()
         except retryable:
-            if attempt == RETRY_ATTEMPTS:
+            if attempt == attempts:
                 raise
             print('::warning::' + stage + '失败，第 ' + str(attempt) + ' 次重试', flush=True)
             SLEEP(RETRY_WAIT_SECONDS * attempt)
@@ -234,7 +236,7 @@ def build(service):
             STAGE = '发布并回读固定版本'
             print(STAGE, flush=True)
             run(['docker', 'tag', 'local-fullbuild:build', IMAGE + ':' + version], env=env)
-            log = retry(STAGE, lambda: run(['docker', 'push', IMAGE + ':' + version], env=env, timeout=PUSH_TIMEOUT_SECONDS), (RuntimeError,)).decode()
+            log = retry(STAGE, lambda: run(['docker', 'push', IMAGE + ':' + version], env=env, timeout=PUSH_TIMEOUT_SECONDS), (RuntimeError,), PUSH_ATTEMPTS).decode()
             found = re.findall(r'digest: (sha256:[0-9a-f]{64})', log)
             if not found:
                 raise ValueError('缺少推送摘要')

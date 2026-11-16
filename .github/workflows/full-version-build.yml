@@ -91,8 +91,8 @@ jobs:
     if: needs.plan.outputs.has_services == 'true'
     needs: plan
     runs-on: ubuntu-24.04
-    # 推送单次最长 30 分钟、最多 2 次，留足余量。
-    timeout-minutes: 90
+    # 推送单次最长 5 分钟、最多 3 次。
+    timeout-minutes: 60
     # 按服务串行：同一服务的版本号计算与推送不并发，不同服务、无需构建的运行互不等待。
     concurrency:
       group: full-version-publication-${{ matrix.service }}
