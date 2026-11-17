@@ -307,7 +307,10 @@ def build(service):
         folder = Path(folder)
         base_out = folder / 'base.out'
         profile = 'nginx' if service == 'admin' else 'alpine'
-        retry('拉取固定基础镜像', lambda: run([sys.executable, 'deploy/scripts/pull-ci-base-image.py', '--profile', profile, '--github-output', str(base_out)], ROOT))
+        STAGE = '拉取并核验固定官方基础镜像'
+        print(STAGE, flush=True)
+        base_helper = module('public_base_image', Path(__file__).with_name('pull-ci-base-image.py'))
+        base_helper.prepare(ROOT, profile, base_out)
         base = dict(line.split('=', 1) for line in base_out.read_text().splitlines())['base_image']
         if service == 'admin':
             STAGE = '构建管理后台'
