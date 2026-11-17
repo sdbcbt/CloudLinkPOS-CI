@@ -1,10 +1,10 @@
 name: 全量构建与镜像推送测试
 on:
   pull_request:
-    paths: ['ci/full-build*', 'ci/registry-upload*', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
+    paths: ['ci/full-build*', 'ci/registry-upload*', 'ci/report-admin-failure*', 'ci/report-pos-failure.py', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
   push:
     branches: [main]
-    paths: ['ci/full-build*', 'ci/registry-upload*', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
+    paths: ['ci/full-build*', 'ci/registry-upload*', 'ci/report-admin-failure*', 'ci/report-pos-failure.py', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
 permissions:
   contents: read
 jobs:
@@ -26,3 +26,5 @@ jobs:
         run: |
           python3 ci/full-build.test.py
           python3 ci/registry-upload_test.py
+          python3 ci/report-admin-failure_test.py
+          python3 ci/report-pos-failure_test.py

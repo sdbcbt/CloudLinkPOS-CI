@@ -3,10 +3,10 @@
 为什么不用 docker push：docker push 每个层一次性上传，连接一断就从 0 重传；跨境链路慢时
 最大层永远传不完，加多少次重试都没用。这里按 Registry 分块协议上传：
   1. HEAD 查 blob 是否已存在，存在就跳过（基础层、未变化的层只传一次）；
-  2. POST 开上传会话，按固定大小 PATCH 分块（Content-Range）；
+  2. POST 开上传会话，按链路速度调整 PATCH 分块（Content-Range）；
   3. 断线或超时后 GET 会话状态读取服务端已收到的 Range，从断点续传，进度只增不减；
   4. 全部收齐后 PUT 带 digest 完成，最后 PUT manifest。
-“卡住”由套接字超时判定（STALL_SECONDS 内没有任何字节收发），不再用整次推送的总时长。
+发送采用小段写入，每段有进展后重新等待；连接、发送和响应分别限时，另保留上传总时限。
 连续 MAX_STALLS 次失败且没有新进度才放弃；有进度就重新计数。
 
 协议不支持（跨域 Location、非预期 4xx 等）时抛 UploadUnsupported，由调用方退回 docker push。
@@ -17,6 +17,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -26,8 +27,12 @@ import tarfile
 import time
 import urllib.parse
 
-CHUNK_BYTES = 4 * 1024 * 1024
-STALL_SECONDS = 60  # 单个请求 60 秒内没有任何字节收发即视为卡住
+CHUNK_BYTES = 256 * 1024
+MIN_CHUNK_BYTES = 64 * 1024
+MAX_CHUNK_BYTES = 4 * 1024 * 1024
+SEND_BYTES = 64 * 1024
+CONNECT_SECONDS = 20
+STALL_SECONDS = 60  # 发送分段无进展或等待响应超时；不是整块发送的总时长
 MAX_STALLS = 10  # 连续 10 次失败且无新进度才放弃；有进度就清零
 TOTAL_SECONDS = 75 * 60  # 整个镜像上传的硬上限，留出 job 的构建与核验时间
 BACKOFF = (5, 10, 20, 30, 60)
@@ -128,6 +133,43 @@ def build_manifest(config, layers):
     return json.dumps(body, separators=(',', ':')).encode()
 
 
+class ProgressHTTPSConnection(http.client.HTTPSConnection):
+    """逐段发送并重置等待时间，避免 sendall 将慢速整块传输误判为卡住。"""
+
+    def __init__(self, host, deadline):
+        super().__init__(host, timeout=CONNECT_SECONDS, context=ssl.create_default_context())
+        self.deadline = deadline
+        self.transport_bytes = 0
+        self.reported_at = CLOCK()
+
+    def remaining_timeout(self):
+        remaining = self.deadline() - CLOCK()
+        if remaining <= 0:
+            raise UploadFailed('超出上传总时限')
+        return min(STALL_SECONDS, remaining)
+
+    def send(self, data):
+        if self.sock is None:
+            self.connect()
+        view = memoryview(data)
+        while view:
+            self.sock.settimeout(self.remaining_timeout())
+            sent = self.sock.send(view[:SEND_BYTES])
+            if sent <= 0:
+                raise ConnectionResetError('发送连接已关闭')
+            view = view[sent:]
+            self.transport_bytes += sent
+            if CLOCK() - self.reported_at >= 15:
+                # 包含请求头和请求体的套接字写入量，不等同于服务端确认量。
+                log('transport_progress', phase='send', transport_bytes=self.transport_bytes)
+                self.reported_at = CLOCK()
+
+    def getresponse(self):
+        if self.sock is not None:
+            self.sock.settimeout(self.remaining_timeout())
+        return super().getresponse()
+
+
 class Uploader:
     def __init__(self, host, repository, token_for, connect=None):
         """token_for(challenge) 用 401 的 WWW-Authenticate 换取 push 令牌；connect() 返回 HTTPSConnection。"""
@@ -135,7 +177,7 @@ class Uploader:
         self.repository = repository
         self.token_for = token_for
         self.token = ''
-        self.connect = connect or (lambda: http.client.HTTPSConnection(host, timeout=STALL_SECONDS, context=ssl.create_default_context()))
+        self.connect = connect or (lambda: ProgressHTTPSConnection(host, lambda: self.deadline))
         self.connection = None
         self.deadline = None
 
@@ -163,15 +205,22 @@ class Uploader:
                 values['Authorization'] = 'Bearer ' + self.token
             if body is not None or method in ('PUT', 'PATCH', 'POST'):
                 values['Content-Length'] = str(len(body or b''))
+            phase = 'send'
             try:
+                if self.deadline is not None and CLOCK() >= self.deadline:
+                    raise UploadFailed('超出上传总时限')
                 if self.connection is None:
                     self.connection = self.connect()
                 self.connection.request(method, path, body=body, headers=values)
+                phase = 'response_headers'
                 response = self.connection.getresponse()
+                phase = 'response_body'
                 data = response.read(1 << 20)
                 returned = {key.lower(): value for key, value in response.getheaders()}
                 status = response.status
             except (socket.timeout, TimeoutError):
+                sent = getattr(self.connection, 'transport_bytes', None)
+                log('request_timeout', phase=phase, method=method, transport_bytes=sent)
                 self.close()
                 raise Transient('stall_timeout') from None
             except (ConnectionError, http.client.HTTPException, ssl.SSLError, OSError) as error:
@@ -219,21 +268,30 @@ class Uploader:
             raise UploadUnsupported('开启上传会话返回 ' + str(status))
         return self.path(headers['location'])
 
-    def received(self, location):
-        """查询会话已收到的字节数；会话失效返回 None。"""
+    def confirmed_offset(self, value, size):
+        """校验服务端已确认范围，禁止越界或解析错误导致跳过未上传内容。"""
+        if not value:
+            return 0
+        match = re.fullmatch(r'(?:bytes=)?0-([0-9]+)', value)
+        if not match:
+            raise UploadFailed('服务端返回的上传范围无效')
+        offset = int(match.group(1)) + 1
+        if offset > size:
+            raise UploadFailed('服务端返回的上传范围越界')
+        return offset
+
+    def received(self, location, size):
+        """查询已确认字节和最新续传地址；会话失效返回 None。"""
         status, headers, _ = self.request('GET', location)
         if status == 404:
             return None
         if status not in (202, 204):
             raise UploadUnsupported('上传状态查询返回 ' + str(status))
-        value = headers.get('range', '')
-        if not value:
-            return 0
-        end = value.split('=', 1)[-1].split('-', 1)[-1]
-        return int(end) + 1
+        offset = self.confirmed_offset(headers.get('range', ''), size)
+        return offset, self.path(headers.get('location', location))
 
     def upload_blob(self, path, digest, size, label):
-        state = {'location': None, 'offset': 0, 'resume': False}
+        state = {'location': None, 'offset': 0, 'resume': False, 'chunk_bytes': CHUNK_BYTES}
         started = CLOCK()
 
         def step():
@@ -242,16 +300,23 @@ class Uploader:
                 if state['location'] is None:
                     state['location'], state['offset'], state['resume'] = self.start(), 0, False
                 elif state['resume']:
-                    got = self.received(state['location'])
+                    got = self.received(state['location'], size)
                     if got is None:
                         state['location'], state['offset'] = self.start(), 0
                     else:
-                        state['offset'] = got
+                        offset, location = got
+                        if offset < state['offset']:
+                            raise UploadFailed('服务端已确认的上传范围倒退')
+                        state['offset'], state['location'] = offset, location
+                        log('resume', layer=label, confirmed_bytes=offset, size=size)
                     state['resume'] = False
                 with open(path, 'rb') as handle:
                     while state['offset'] < size:
                         handle.seek(state['offset'])
-                        chunk = handle.read(CHUNK_BYTES)
+                        if CLOCK() >= self.deadline:
+                            raise UploadFailed('超出上传总时限')
+                        chunk = handle.read(state['chunk_bytes'])
+                        chunk_started = CLOCK()
                         end = state['offset'] + len(chunk) - 1
                         status, headers, _ = self.request('PATCH', state['location'], chunk, {
                             'Content-Type': 'application/octet-stream', 'Content-Range': str(state['offset']) + '-' + str(end)})
@@ -260,8 +325,14 @@ class Uploader:
                             raise Transient('range_mismatch', status)
                         if status != 202 or not headers.get('location'):
                             raise UploadUnsupported('分块上传返回 ' + str(status))
+                        if 'range' in headers and self.confirmed_offset(headers['range'], size) != end + 1:
+                            raise UploadFailed('分块响应的确认范围与本次上传不符')
                         state['location'] = self.path(headers['location'])
                         state['offset'] = end + 1
+                        elapsed = CLOCK() - chunk_started
+                        log('chunk_done', layer=label, confirmed_bytes=state['offset'], size=size, chunk_bytes=len(chunk), seconds=round(elapsed, 1))
+                        if elapsed < 10:
+                            state['chunk_bytes'] = min(MAX_CHUNK_BYTES, state['chunk_bytes'] * 2)
                 separator = '&' if '?' in state['location'] else '?'
                 status, headers, _ = self.request('PUT', state['location'] + separator + 'digest=' + urllib.parse.quote(digest), b'')
                 if status == 416:
@@ -272,6 +343,7 @@ class Uploader:
                 if headers.get('docker-content-digest', digest) != digest:
                     raise UploadUnsupported('仓库返回的层摘要不符')
             except Transient as error:
+                state['chunk_bytes'] = max(min(MIN_CHUNK_BYTES, CHUNK_BYTES), state['chunk_bytes'] // 2)
                 state['resume'] = state['location'] is not None
                 error.progressed = state['offset'] > before
                 log('progress', layer=label, sent=state['offset'], size=size)
