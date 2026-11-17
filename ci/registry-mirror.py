@@ -3,6 +3,7 @@ import hashlib
 import base64
 import re
 import random
+import ssl
 import sys
 import importlib.util
 import json
@@ -28,6 +29,32 @@ class PublicationBusy(ValueError):
         self.retry_after = retry_after
 
 
+class TransientHttpError(ValueError):
+    def __init__(self, category, status):
+        super().__init__(category)
+        self.status = status
+
+
+def certificate_failure(error):
+    """证书真实性错误不重试，字符串原因仅在本地判定且不进入日志。"""
+    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+    return isinstance(reason, (ssl.SSLCertVerificationError, ssl.CertificateError)) or (isinstance(reason, str) and ('certificate_verify_failed' in reason.lower() or 'certificate verify failed' in reason.lower()))
+
+
+def cf(path, value, method='POST', tag=None, deadline=None):
+    """仅为明确幂等的操作重试短暂网络错误，每次重新签发身份并打开上传文件。"""
+    retryable = (method == 'GET' and path == '/status') or (method == 'PUT' and path.startswith('/blob/')) or (method == 'POST' and path in ('/prepare', '/commit', '/verify', '/finalize', '/pins/add'))
+    for attempt in range(4):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ValueError('CF_PUBLICATION_WAIT_TIMEOUT')
+        try:
+            return cf_once(path, value, method=method, tag=tag)
+        except (urllib.error.URLError, TimeoutError, ConnectionError, TransientHttpError) as error:
+            if not retryable or certificate_failure(error) or attempt == 3:
+                raise
+            time.sleep((1, 3, 6)[attempt])
+
+
 def publication_token():
     """每次管理请求重新申请短期身份，避免上传期间令牌过期。"""
     url = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']
@@ -42,6 +69,8 @@ def publication_token():
         with urllib.request.build_opener(PILOT.NoRedirect()).open(urllib.request.Request(url, headers=headers), timeout=30) as response:
             token = json.loads(response.read(32000))['value']
     except urllib.error.HTTPError as error:
+        if error.code in (502, 503, 504):
+            raise TransientHttpError('OIDC_HTTP_' + str(error.code), error.code) from None
         raise ValueError('OIDC_HTTP_' + str(error.code)) from None
     if not isinstance(token, str) or not 20 < len(token) < 16000:
         raise ValueError('OIDC_TOKEN_INVALID')
@@ -61,12 +90,14 @@ def publication_token():
     return token
 
 
-def cf(path, value, method='POST', tag=None):
+def cf_once(path, value, method='POST', tag=None):
     """执行受限管理请求，只记录固定类别、耗时及状态，禁止输出凭据与原始响应。"""
     started = time.monotonic()
     data = None
     status = None
     exception = None
+    reason_class = None
+    reason_errno = None
     category = 'blob' if path.startswith('/blob/') else 'pins' if path.startswith('/pins/') else path.removeprefix('/') if path in ('/prepare', '/commit', '/verify', '/finalize', '/status', '/abort') else 'other'
     try:
         headers = {'Authorization': 'Bearer ' + publication_token(), 'User-Agent': 'cloudlinkpos-registry/1.0'}
@@ -89,17 +120,26 @@ def cf(path, value, method='POST', tag=None):
             retry_after = error.headers.get('Retry-After', '5')
             delay = int(retry_after) if re.fullmatch('[0-9]{1,2}', retry_after) else 5
             raise PublicationBusy(max(1, min(delay, 30))) from None
+        if error.code in (502, 503, 504):
+            raise TransientHttpError('CF_HTTP_' + str(error.code), error.code) from None
         reason = error.headers.get('x-registry-auth-reason', '')
         suffix = '_' + reason if reason in ('FORMAT', 'HEADER', 'TIME', 'CLAIMS', 'KEY_FETCH', 'KEY_ID', 'KEY_IMPORT', 'SIGNATURE', 'CREDENTIALS') else ''
         raise ValueError('CF_HTTP_' + str(error.code) + suffix) from None
     except Exception as error:
+        reason = error.reason if isinstance(error, urllib.error.URLError) else error
+        reason_name = type(reason).__name__
+        reason_class = reason_name if reason_name in ('gaierror', 'TimeoutError', 'ConnectionResetError', 'ConnectionRefusedError', 'ConnectionAbortedError', 'SSLCertVerificationError', 'SSLError', 'OSError', 'ConnectionError') else 'StringReason' if isinstance(reason, str) else 'OtherError'
+        number = getattr(reason, 'errno', None)
+        reason_errno = number if type(number) is int and -65535 <= number <= 65535 else None
+        if isinstance(error, TransientHttpError):
+            status = error.status
         name = type(error).__name__
-        exception = name if name in ('TimeoutError', 'URLError', 'ConnectionError', 'ConnectionResetError', 'OSError', 'ValueError', 'JSONDecodeError', 'TypeError') else 'OtherError'
+        exception = 'HTTPError' if isinstance(error, TransientHttpError) else name if name in ('TimeoutError', 'URLError', 'ConnectionError', 'ConnectionResetError', 'OSError', 'ValueError', 'JSONDecodeError', 'TypeError') else 'OtherError'
         raise
     finally:
         if hasattr(data, 'close'):
             data.close()
-        event = {'category': category, 'method': method if method in ('GET', 'POST', 'PUT') else 'OTHER', 'elapsedSeconds': round(max(0, time.monotonic() - started), 3), 'httpStatus': status if type(status) is int and 100 <= status <= 599 else None, 'exception': exception}
+        event = {'category': category, 'method': method if method in ('GET', 'POST', 'PUT') else 'OTHER', 'elapsedSeconds': round(max(0, time.monotonic() - started), 3), 'httpStatus': status if type(status) is int and 100 <= status <= 599 else None, 'exception': exception, 'reasonClass': reason_class, 'reasonErrno': reason_errno}
         print('CF 请求状态：' + json.dumps(event, ensure_ascii=False), flush=True)
 
 
@@ -140,7 +180,7 @@ def prepare_publication(service, tag, raw):
         if waiting and time.monotonic() - started >= PUBLICATION_WAIT_SECONDS:
             raise ValueError('CF_PUBLICATION_WAIT_TIMEOUT')
         try:
-            return cf('/prepare', {'service': service, 'tag': tag, 'manifest': raw.decode()})
+            return cf('/prepare', {'service': service, 'tag': tag, 'manifest': raw.decode()}, deadline=started + PUBLICATION_WAIT_SECONDS if waiting else None)
         except PublicationBusy as error:
             remaining = PUBLICATION_WAIT_SECONDS - (time.monotonic() - started)
             if remaining <= 0:

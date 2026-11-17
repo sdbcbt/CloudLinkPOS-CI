@@ -179,11 +179,134 @@ class Mirror(unittest.TestCase):
         self.assertIn('"elapsedSeconds":', line)
         for failure, marker in [(TimeoutError(secret), 'TimeoutError'), (urllib.error.HTTPError(secret, 507, secret, {}, None), 'HTTPError')]:
             output = io.StringIO()
-            with redirect_stdout(output), patch.object(MIRROR, 'publication_token', return_value=secret), patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=failure), self.assertRaises(Exception):
+            with redirect_stdout(output), patch.object(MIRROR, 'publication_token', return_value=secret), patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=failure), patch.object(MIRROR.time, 'sleep'), self.assertRaises(Exception):
                 MIRROR.cf('/blob/' + secret, None, method='PUT', tag=secret)
             self.assertNotIn(secret, output.getvalue())
             self.assertIn('"category": "blob"', output.getvalue())
             self.assertIn(marker, output.getvalue())
+
+    def test_blob_retry_reopens_file_and_recovers_lost_success_response(self):
+        from unittest.mock import MagicMock
+        import socket
+        stored = []
+        handles = []
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b'{"exists":true}'
+        def open_request(request, **kwargs):
+            handles.append(request.data)
+            stored.append(request.data.read())
+            if len(handles) == 1:
+                # 模拟服务端已收全文件，但成功响应返回时连接断开。
+                raise urllib.error.URLError(ConnectionResetError(54, 'sensitive-marker'))
+            return response
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'blob'
+            path.write_bytes(b'complete-blob')
+            with patch.object(MIRROR, 'publication_token', return_value='private-token'), patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=open_request), patch.object(MIRROR.time, 'sleep') as sleep:
+                self.assertTrue(MIRROR.cf('/blob/sha256:' + 'd' * 64, path, method='PUT', tag='private-tag')['exists'])
+        self.assertEqual(stored, [b'complete-blob', b'complete-blob'])
+        self.assertIsNot(handles[0], handles[1])
+        self.assertTrue(all(handle.closed for handle in handles))
+        sleep.assert_called_once_with(1)
+
+    def test_four_attempt_limit_preserves_error_and_certificate_and_capacity_fail_immediately(self):
+        import ssl
+        original = urllib.error.URLError(ConnectionResetError(54, 'sensitive-marker'))
+        with patch.object(MIRROR, 'cf_once', side_effect=original) as once, patch.object(MIRROR.time, 'sleep') as sleep, self.assertRaises(urllib.error.URLError) as caught:
+            MIRROR.cf('/commit', {'tag': 'private-tag', 'digest': 'private-digest'})
+        self.assertIs(caught.exception, original)
+        self.assertEqual(once.call_count, 4)
+        self.assertEqual([item.args[0] for item in sleep.call_args_list], [1, 3, 6])
+        cert = urllib.error.URLError(ssl.SSLCertVerificationError(1, 'private-message'))
+        for error in (cert, ValueError('CF_HTTP_507'), ValueError('CF_HTTP_401'), ValueError('CF_HTTP_429')):
+            with patch.object(MIRROR, 'cf_once', side_effect=error) as once, patch.object(MIRROR.time, 'sleep') as sleep, self.assertRaises(Exception) as caught:
+                MIRROR.cf('/prepare', {})
+            self.assertIs(caught.exception, error)
+            self.assertEqual(once.call_count, 1)
+            sleep.assert_not_called()
+
+    def test_fourth_blob_transient_retry_succeeds_and_exhaustion_aborts_original_error(self):
+        digest = 'sha256:' + 'd' * 64
+        raw = b'{}'
+        blob_calls = 0
+        paths = []
+        def once(path, value, **kwargs):
+            nonlocal blob_calls
+            paths.append(path)
+            if path == '/prepare':
+                return {'digest': digest, 'missing': [{'digest': digest, 'size': 1}] * 4}
+            if path.startswith('/blob/'):
+                blob_calls += 1
+                if blob_calls == 4:
+                    raise urllib.error.URLError(ConnectionResetError(54, 'sensitive-marker'))
+            if path == '/commit':
+                return {'digest': digest}
+            if path == '/verify':
+                return {'verified': True, 'blobDigestsVerified': True, 'repository': 'sdbcbt/cloudlinkpos', 'tag': 'employee-api-v1.0.0', 'digest': digest, 'latest': 'employee-api-latest'}
+            return {}
+        with patch.dict(MIRROR.os.environ, {'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1'}), patch.object(MIRROR.PILOT.Registry, 'verify_image', return_value=raw), patch.object(MIRROR, 'cf_once', side_effect=once), patch.object(MIRROR, 'download_blob', side_effect=lambda desc, file, token: file.write_bytes(b'x')), patch.object(MIRROR.PILOT, 'token', return_value='private-token'), patch.object(MIRROR.PILOT, 'request', return_value=(401, {}, b'')), patch.object(MIRROR.time, 'sleep'):
+            self.assertTrue(MIRROR.mirror('employee-api', 'employee-api-v1.0.0', digest, raw, lambda: [])['authenticated_read'])
+        self.assertEqual(blob_calls, 5)
+        self.assertNotIn('/abort', paths)
+
+    def test_http_gateway_failures_retry_but_non_idempotent_abort_does_not(self):
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b'{}'
+        for status in (502, 503, 504):
+            error = urllib.error.HTTPError('https://fixture.invalid', status, '', {}, None)
+            with self.subTest(status=status), patch.object(MIRROR, 'publication_token', return_value='private-token'), patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=[error, response]) as opened, patch.object(MIRROR.time, 'sleep') as sleep:
+                self.assertEqual(MIRROR.cf('/verify', {}), {})
+            self.assertEqual(opened.call_count, 2)
+            sleep.assert_called_once_with(1)
+        original = urllib.error.URLError(ConnectionResetError(54, 'private-message'))
+        with patch.object(MIRROR, 'cf_once', side_effect=original) as once, patch.object(MIRROR.time, 'sleep') as sleep, self.assertRaises(urllib.error.URLError):
+            MIRROR.cf('/abort', {})
+        self.assertEqual(once.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_exhausted_blob_retry_triggers_abort_without_replacing_original_error(self):
+        original = urllib.error.URLError(ConnectionResetError(54, 'private-message'))
+        digest = 'sha256:' + 'd' * 64
+        raw = b'{}'
+        calls = []
+        def once(path, value, **kwargs):
+            calls.append(path)
+            if path == '/prepare':
+                return {'digest': digest, 'missing': [{'digest': digest, 'size': 1}]}
+            if path.startswith('/blob/'):
+                raise original
+            if path == '/abort':
+                raise RuntimeError('cleanup failed')
+            return {}
+        with patch.dict(MIRROR.os.environ, {'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1'}), patch.object(MIRROR.PILOT.Registry, 'verify_image', return_value=raw), patch.object(MIRROR, 'cf_once', side_effect=once), patch.object(MIRROR, 'download_blob', side_effect=lambda desc, file, token: file.write_bytes(b'x')), patch.object(MIRROR.PILOT, 'token', return_value='private-token'), patch.object(MIRROR.time, 'sleep'), self.assertRaises(urllib.error.URLError) as caught:
+            MIRROR.mirror('employee-api', 'employee-api-v1.0.0', digest, raw, lambda: [])
+        self.assertIs(caught.exception, original)
+        self.assertEqual(sum(path.startswith('/blob/') for path in calls), 4)
+        self.assertEqual(calls[-1], '/abort')
+
+    def test_network_retry_does_not_cross_an_active_publication_queue_deadline(self):
+        original = urllib.error.URLError(ConnectionResetError(54, 'private-message'))
+        with patch.object(MIRROR, 'cf_once', side_effect=original) as once, patch.object(MIRROR.time, 'monotonic', side_effect=[2699, 2700]), patch.object(MIRROR.time, 'sleep'), self.assertRaisesRegex(ValueError, 'CF_PUBLICATION_WAIT_TIMEOUT'):
+            MIRROR.cf('/prepare', {}, deadline=2700)
+        self.assertEqual(once.call_count, 1)
+
+    def test_safe_reason_log_distinguishes_dns_reset_and_ssl_without_messages(self):
+        import io
+        import socket
+        import ssl
+        from contextlib import redirect_stdout
+        for reason in (socket.gaierror(-2, 'sensitive-marker'), ConnectionResetError(54, 'sensitive-marker'), ssl.SSLCertVerificationError(1, 'sensitive-marker')):
+            output = io.StringIO()
+            with redirect_stdout(output), patch.object(MIRROR, 'publication_token', return_value='private-token'), patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=urllib.error.URLError(reason)), patch.object(MIRROR.time, 'sleep'), self.assertRaises(urllib.error.URLError):
+                MIRROR.cf('/verify', {'tag': 'sensitive-marker'})
+            self.assertNotIn('sensitive-marker', output.getvalue())
+            self.assertIn(type(reason).__name__, output.getvalue())
+            self.assertIn(str(reason.errno), output.getvalue())
 
     def test_credentials_are_never_forwarded_to_untrusted_download_redirect(self):
         error = urllib.error.HTTPError('https://ghcr.io', 307, '', {'Location': 'https://evil.example/blob'}, None)
