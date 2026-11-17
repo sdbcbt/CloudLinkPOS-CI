@@ -170,35 +170,70 @@ class Retry(unittest.TestCase):
             self.assertEqual(seen, [False, False])
 
 
-class PushTimeout(unittest.TestCase):
+class Push(unittest.TestCase):
     def test_timeout_becomes_retryable_stage_failure(self):
         import subprocess
         with patch.object(BUILD.subprocess, 'run', side_effect=subprocess.TimeoutExpired('docker', 1)):
             with self.assertRaises(RuntimeError):
                 BUILD.run(['docker', 'push', 'x'], timeout=1)
 
-    def test_push_is_retried_with_timeout(self):
-        source = Path(__file__).with_name('full-build.py').read_text()
-        self.assertIn("retry(STAGE, lambda: run(['docker', 'push', IMAGE + ':' + version], env=env, timeout=PUSH_TIMEOUT_SECONDS), (RuntimeError,), PUSH_ATTEMPTS)", source)
-        self.assertEqual(BUILD.PUSH_TIMEOUT_SECONDS, 5 * 60)
-        self.assertEqual(BUILD.PUSH_ATTEMPTS, 10)
-        # 最坏情况（全部超时 + 递增等待）须留在 job 限时之内，并给构建留出 30 分钟。
-        import yaml
-        workflow = yaml.safe_load((Path(__file__).parents[1] / '.github/workflows/full-version-build.yml').read_text())
-        waits = sum(BUILD.RETRY_WAIT_SECONDS * attempt for attempt in range(1, BUILD.PUSH_ATTEMPTS))
-        worst = BUILD.PUSH_TIMEOUT_SECONDS * BUILD.PUSH_ATTEMPTS + waits
-        self.assertLessEqual(worst + 30 * 60, workflow['jobs']['build']['timeout-minutes'] * 60)
+    def run_push(self, push_result):
+        class Module:
+            class UploadUnsupported(Exception):
+                pass
 
-    def test_push_attempts_override_default_limit(self):
-        calls = []
+            class UploadFailed(Exception):
+                pass
 
-        def broken():
-            calls.append(1)
-            raise RuntimeError('超时')
-        with patch.object(BUILD, 'SLEEP', lambda _: None):
-            with self.assertRaises(RuntimeError):
-                BUILD.retry('推送', broken, (RuntimeError,), BUILD.PUSH_ATTEMPTS)
-        self.assertEqual(len(calls), 10)
+            @staticmethod
+            def prepare_image(archive, work):
+                return b'{}', [(work / 'l', 'sha256:' + 'a' * 64, 1048576)]
+
+            class Uploader:
+                def __init__(self, *args):
+                    self.token = ''
+
+                def push(self, config, layers, tag):
+                    if isinstance(push_result, Exception):
+                        raise push_result
+                    return push_result
+
+        class Client:
+            repository = 'sdbcbt/cloudlinkpos'
+            token = 't'
+        commands = []
+
+        def fake_run(args, cwd=None, env=None, data=None, timeout=None, show_error=False):
+            commands.append(args)
+            if args[:2] == ['docker', 'save']:
+                Path(args[3]).write_bytes(b'')
+            if args[:2] == ['docker', 'push']:
+                return b'digest: sha256:' + b'b' * 64 + b' size: 1'
+            return b''
+        push_result = push_result(Module) if callable(push_result) and not isinstance(push_result, str) else push_result
+        with tempfile.TemporaryDirectory() as folder, patch.object(BUILD, 'module', return_value=Module), patch.object(BUILD, 'run', fake_run):
+            digest = BUILD.push_image(Client(), 'svc-v1.0.1', Path(folder), {})
+        return digest, commands
+
+    def test_resumable_upload_is_used_first(self):
+        digest, commands = self.run_push('sha256:' + 'c' * 64)
+        self.assertEqual(digest, 'sha256:' + 'c' * 64)
+        self.assertFalse([c for c in commands if c[:2] == ['docker', 'push']])
+
+    def test_unsupported_protocol_falls_back_to_docker_push(self):
+        digest, commands = self.run_push(lambda module: module.UploadUnsupported('x'))
+        self.assertEqual(digest, 'sha256:' + 'b' * 64)
+        push = [c for c in commands if c[:2] == ['docker', 'push']]
+        self.assertEqual(len(push), 1)
+
+    def test_network_failure_does_not_fall_back(self):
+        with self.assertRaises(Exception) as caught:
+            self.run_push(lambda module: module.UploadFailed('无进展'))
+        self.assertEqual(type(caught.exception).__name__, 'UploadFailed')
+
+    def test_fallback_limits(self):
+        self.assertEqual(BUILD.FALLBACK_PUSH_ATTEMPTS, 2)
+        self.assertEqual(BUILD.FALLBACK_PUSH_TIMEOUT_SECONDS, 20 * 60)
 
 
 class Concurrency(unittest.TestCase):

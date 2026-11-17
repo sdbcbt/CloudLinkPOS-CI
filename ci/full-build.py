@@ -25,13 +25,13 @@ DEPLOY_MANIFEST = ROOT.parent / 'fleet-deploy-manifest.yaml'
 
 
 # 推送前的网络步骤（读源码、读私库标签、拉基础镜像、编译）遇到偶发网络故障时重试。
-# docker push 也重试：重推的是同一个已确定的版本标签和同一镜像，不会生成第二个版本号；
-# 版本号计算与回读核验不重复执行。
 RETRY_ATTEMPTS = 2  # 总共最多 2 次：失败后只再试 1 次
 RETRY_WAIT_SECONDS = 30
-# 镜像不大，正常推送远低于 5 分钟；超过即视为卡住，中止并以同一版本标签重推。
-PUSH_TIMEOUT_SECONDS = 5 * 60
-PUSH_ATTEMPTS = 10  # 推送总共最多 10 次（跨境推送不稳定时多给机会）
+# 镜像推送默认走 registry-upload.py 的分块断点续传：断线后从服务端已收到的位置续传，
+# 进度只增不减，卡住按“60 秒无字节收发”判定。只有仓库不支持分块协议时才退回 docker push，
+# docker push 断线会让整层从 0 重传，因此只作兜底：单次最长 20 分钟、最多 2 次。
+FALLBACK_PUSH_TIMEOUT_SECONDS = 20 * 60
+FALLBACK_PUSH_ATTEMPTS = 2
 SLEEP = time.sleep
 
 
@@ -47,14 +47,52 @@ def retry(stage, action, retryable=(Exception,), attempts=None):
             SLEEP(RETRY_WAIT_SECONDS * attempt)
 
 
-def run(args, cwd=None, env=None, data=None, timeout=None):
+def run(args, cwd=None, env=None, data=None, timeout=None, show_error=False):
+    """执行命令；show_error=True 时失败会打印输出末尾，便于判断网络、认证还是限流（不含凭据的命令才可开启）。"""
     try:
         result = subprocess.run(args, cwd=cwd, env=env, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
+        if show_error:
+            tail(error.stdout, error.stderr)
         raise RuntimeError('阶段超时')
     if result.returncode:
+        if show_error:
+            tail(result.stdout, result.stderr)
         raise RuntimeError('阶段失败')
     return result.stdout
+
+
+def tail(stdout, stderr, lines=20):
+    text = ((stdout or b'') + b'\n' + (stderr or b'')).decode(errors='replace').strip().splitlines()
+    for line in text[-lines:]:
+        print('  | ' + line, file=sys.stderr, flush=True)
+
+
+def push_image(client, version, folder, env):
+    """推送本地镜像并返回 manifest digest：先分块断点续传，仓库不支持时退回 docker push。"""
+    uploader_module = module('registry_upload', Path(__file__).with_name('registry-upload.py'))
+    work = folder / 'push'
+    work.mkdir()
+    archive = work / 'image.tar'
+    run(['docker', 'save', '-o', str(archive), 'local-fullbuild:build'])
+    try:
+        config, layers = uploader_module.prepare_image(archive, work)
+        archive.unlink()
+        for index, (_, digest, size) in enumerate(layers):
+            print('镜像层 layer-' + str(index) + '：' + str(round(size / 1048576, 2)) + ' MiB ' + digest[:19], flush=True)
+        uploader = uploader_module.Uploader(REGISTRY, client.repository, lambda challenge: client.bearer_token(challenge, 'pull,push', True))
+        uploader.token = client.token
+        return uploader.push(config, layers, version)
+    except uploader_module.UploadUnsupported as error:
+        # 只有协议不兼容才兜底；网络持续无进展（UploadFailed）换 docker push 也不会更好，直接失败。
+        print('::warning::仓库不支持分块续传（' + str(error) + '），退回 docker push', flush=True)
+    run(['docker', 'tag', 'local-fullbuild:build', IMAGE + ':' + version], env=env)
+    log = retry('docker push 兜底', lambda: run(['docker', 'push', IMAGE + ':' + version], env=env, timeout=FALLBACK_PUSH_TIMEOUT_SECONDS, show_error=True),
+                (RuntimeError,), FALLBACK_PUSH_ATTEMPTS).decode()
+    found = re.findall(r'digest: (sha256:[0-9a-f]{64})', log)
+    if not found:
+        raise ValueError('缺少推送摘要')
+    return found[-1]
 
 
 def module(name, path):
@@ -235,12 +273,7 @@ def build(service):
         try:
             STAGE = '发布并回读固定版本'
             print(STAGE, flush=True)
-            run(['docker', 'tag', 'local-fullbuild:build', IMAGE + ':' + version], env=env)
-            log = retry(STAGE, lambda: run(['docker', 'push', IMAGE + ':' + version], env=env, timeout=PUSH_TIMEOUT_SECONDS), (RuntimeError,), PUSH_ATTEMPTS).decode()
-            found = re.findall(r'digest: (sha256:[0-9a-f]{64})', log)
-            if not found:
-                raise ValueError('缺少推送摘要')
-            digest = found[-1]
+            digest = push_image(client, version, folder, env)
             client.verify_image(version, digest)
             evidence = client.prove_private(digest)
             STAGE = '更新并核验 latest'
@@ -297,6 +330,7 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except Exception:
-        print('::error::全量构建停止于：' + STAGE, file=sys.stderr)
+    except Exception as error:
+        # 只输出异常类别与本仓库/发布脚本定义的固定原因文本，便于区分网络、协议与核验失败。
+        print('::error::全量构建停止于：' + STAGE + '（' + type(error).__name__ + '：' + str(error)[:200] + '）', file=sys.stderr)
         sys.exit(1)

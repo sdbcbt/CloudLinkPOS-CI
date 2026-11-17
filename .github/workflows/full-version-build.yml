@@ -91,7 +91,8 @@ jobs:
     if: needs.plan.outputs.has_services == 'true'
     needs: plan
     runs-on: ubuntu-24.04
-    # 推送单次最长 5 分钟、最多 10 次，重试间隔 30 秒递增（共约 22.5 分钟），另加构建时间。
+    # 推送走分块断点续传（ci/registry-upload.py）：60 秒无字节收发视为卡住并续传，上传总上限 75 分钟；
+    # 仓库不支持分块协议时才退回 docker push（单次 20 分钟、最多 2 次）。另加构建时间。
     timeout-minutes: 120
     # 按服务串行：同一服务的版本号计算与推送不并发，不同服务、无需构建的运行互不等待。
     concurrency:

@@ -1,0 +1,28 @@
+name: 全量构建与镜像推送测试
+on:
+  pull_request:
+    paths: ['ci/full-build*', 'ci/registry-upload*', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
+  push:
+    branches: [main]
+    paths: ['ci/full-build*', 'ci/registry-upload*', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
+        with:
+          python-version: '3.12'
+      - name: 准备固定 YAML 解析器
+        run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+      - name: 验证版本计算、分块断点续传与 docker push 兜底
+        run: |
+          python3 ci/full-build.test.py
+          python3 ci/registry-upload_test.py
