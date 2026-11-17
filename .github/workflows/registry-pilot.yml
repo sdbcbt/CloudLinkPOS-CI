@@ -7,7 +7,7 @@ on:
         type: string
         required: true
       mirror_to_cf:
-        description: 同步到 CF/R2 隔离试点，需要先配置试点发布凭据
+        description: 同步到 CF/R2 隔离试点，使用 GitHub 短期身份验证
         type: boolean
         default: false
 permissions: {}
@@ -23,6 +23,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     steps:
       - name: 核验通知机器人派发
         env:
@@ -72,7 +73,6 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           GITHUB_TOKEN: ${{ github.token }}
-          PILOT_PUBLISH_TOKEN: ${{ secrets.PILOT_PUBLISH_TOKEN }}
         run: python3 automation/ci/registry-pilot-mirror.py
       - name: 仅保存试点版本、摘要和耗时
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

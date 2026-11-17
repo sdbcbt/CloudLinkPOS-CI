@@ -1,6 +1,7 @@
 """核对镜像层重定向不泄漏凭据，并验证下载大小和摘要。"""
 import importlib.util
 import io
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -31,6 +32,21 @@ class Mirror(unittest.TestCase):
             MIRROR.download_blob(descriptor, destination, 'fixture-private-token')
             self.assertEqual(destination.read_bytes(), payload)
         return calls
+
+    def test_publication_uses_scoped_short_lived_identity_and_application_agent(self):
+        calls = []
+        class Opener:
+            def open(self, request, timeout):
+                calls.append(request)
+                return Response(b'{"value":"fixture-short-lived-identity"}' if len(calls) == 1 else b'{}')
+        env = {'ACTIONS_ID_TOKEN_REQUEST_URL': 'https://run-actions.example.actions.githubusercontent.com/token?api-version=2', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'fixture-request-token'}
+        with patch.dict(os.environ, env), patch.object(MIRROR.urllib.request, 'build_opener', return_value=Opener()):
+            MIRROR.cf('/prepare', {})
+        self.assertIn('audience=cloudlinkpos-registry-pilot', calls[0].full_url)
+        self.assertEqual(calls[1].get_header('Authorization'), 'Bearer fixture-short-lived-identity')
+        self.assertEqual(calls[1].get_header('User-agent'), 'cloudlinkpos-registry-pilot/1.0')
+        with patch.dict(os.environ, dict(env, ACTIONS_ID_TOKEN_REQUEST_URL='https://attacker.invalid/token')), self.assertRaises(ValueError):
+            MIRROR.publication_token()
 
     def test_cdn_redirect_does_not_receive_ghcr_bearer(self):
         calls = self.run_download('https://pkg-containers.githubusercontent.com/blob?fixture=signed')
