@@ -78,10 +78,18 @@ class Mirror(unittest.TestCase):
         with patch.object(MIRROR, 'cf', return_value={'budgetBytes': 9000000000, 'usedBytes': 10, 'reservedBytes': 20}) as cf:
             MIRROR.preflight()
         cf.assert_called_once_with('/status', None, method='GET')
+        # 已满状态仍只读报告，允许构建后在上传准备阶段清理额外历史再判容量。
+        for status in (
+            {'budgetBytes': 9000000000, 'usedBytes': 9000000000, 'reservedBytes': 0},
+            {'budgetBytes': 9000000000, 'usedBytes': 8999999990, 'reservedBytes': 11},
+        ):
+            with self.subTest(status=status), patch.object(MIRROR, 'cf', return_value=status) as full:
+                MIRROR.preflight()
+            full.assert_called_once_with('/status', None, method='GET')
         invalid = [
             {'budgetBytes': 9000000001},
-            {'usedBytes': 9000000000},
-            {'usedBytes': 8999999990, 'reservedBytes': 11},
+            {'usedBytes': -1},
+            {'reservedBytes': -1},
         ]
         for changes in invalid:
             status = {'budgetBytes': 9000000000, 'usedBytes': 10, 'reservedBytes': 20, **changes}
@@ -116,6 +124,66 @@ class Mirror(unittest.TestCase):
         self.assertLess(finalize, receipt)
         calls, _ = self.execute()
         self.assertNotIn('/finalize', [call[0] for call in calls])
+
+    def test_only_explicit_prepare_busy_response_is_retried(self):
+        cases = [(429, {'x-registry-publication-busy': '1', 'Retry-After': '5'}, MIRROR.PublicationBusy), (429, {}, ValueError), (507, {'x-registry-publication-busy': '1'}, ValueError), (401, {}, ValueError)]
+        for status, headers, expected in cases:
+            error = urllib.error.HTTPError('https://fixture.invalid', status, '', headers, None)
+            with self.subTest(status=status, headers=headers), patch.object(MIRROR, 'publication_token', return_value='private-token'), patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=error), self.assertRaises(expected) as caught:
+                MIRROR.cf('/prepare', {})
+            self.assertIs(type(caught.exception), expected)
+        error = urllib.error.HTTPError('https://fixture.invalid', 429, '', {'x-registry-publication-busy': '1'}, None)
+        with patch.object(MIRROR, 'publication_token', return_value='private-token'), patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=error), self.assertRaises(ValueError) as caught:
+            MIRROR.cf('/pins/add', {})
+        self.assertIs(type(caught.exception), ValueError)
+
+    def test_prepare_waits_on_busy_then_succeeds_and_stops_at_deadline(self):
+        plan = {'digest': 'sha256:' + 'd' * 64}
+        with patch.object(MIRROR, 'cf', side_effect=[MIRROR.PublicationBusy(), plan]) as cf, patch.object(MIRROR.time, 'sleep') as sleep, patch.object(MIRROR.random, 'uniform', return_value=9):
+            self.assertIs(MIRROR.prepare_publication('employee-api', 'employee-api-v1.0.0', b'{}'), plan)
+        self.assertEqual(cf.call_count, 2)
+        sleep.assert_called_once_with(9)
+        with patch.object(MIRROR, 'cf', side_effect=MIRROR.PublicationBusy()), patch.object(MIRROR.time, 'monotonic', side_effect=[0, MIRROR.PUBLICATION_WAIT_SECONDS]), patch.object(MIRROR.time, 'sleep') as sleep, self.assertRaisesRegex(ValueError, 'CF_PUBLICATION_WAIT_TIMEOUT'):
+            MIRROR.prepare_publication('employee-api', 'employee-api-v1.0.0', b'{}')
+        sleep.assert_not_called()
+        for reason in ('CF_HTTP_507', 'CF_HTTP_401', 'CF_HTTP_502'):
+            with patch.object(MIRROR, 'cf', side_effect=ValueError(reason)) as cf, patch.object(MIRROR.time, 'sleep') as sleep, self.assertRaisesRegex(ValueError, reason):
+                MIRROR.prepare_publication('employee-api', 'employee-api-v1.0.0', b'{}')
+            self.assertEqual(cf.call_count, 1)
+            sleep.assert_not_called()
+
+    def test_busy_deadline_is_checked_before_the_next_request(self):
+        with patch.object(MIRROR, 'cf', side_effect=MIRROR.PublicationBusy()) as cf, patch.object(MIRROR.time, 'monotonic', side_effect=[0, 2695, 2700]), patch.object(MIRROR.time, 'sleep') as sleep, patch.object(MIRROR.random, 'uniform', return_value=12), self.assertRaisesRegex(ValueError, 'CF_PUBLICATION_WAIT_TIMEOUT'):
+            MIRROR.prepare_publication('employee-api', 'sensitive-tag', b'{}')
+        self.assertEqual(cf.call_count, 1)
+        sleep.assert_called_once_with(5)
+
+    def test_cf_timeout_and_logs_exclude_sensitive_request_and_error_contents(self):
+        import io
+        from contextlib import redirect_stdout
+        from unittest.mock import MagicMock
+        secret = 'sensitive-marker'
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b'{}'
+        output = io.StringIO()
+        with redirect_stdout(output), patch.object(MIRROR, 'publication_token', return_value=secret), patch.object(MIRROR.urllib.request.OpenerDirector, 'open', return_value=response) as opened:
+            MIRROR.cf('/prepare', {'tag': secret, 'digest': secret})
+        self.assertEqual(opened.call_args.kwargs['timeout'], 600)
+        line = output.getvalue()
+        self.assertNotIn(secret, line)
+        self.assertNotIn('https://', line)
+        self.assertIn('"category": "prepare"', line)
+        self.assertIn('"httpStatus": 200', line)
+        self.assertIn('"elapsedSeconds":', line)
+        for failure, marker in [(TimeoutError(secret), 'TimeoutError'), (urllib.error.HTTPError(secret, 507, secret, {}, None), 'HTTPError')]:
+            output = io.StringIO()
+            with redirect_stdout(output), patch.object(MIRROR, 'publication_token', return_value=secret), patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=failure), self.assertRaises(Exception):
+                MIRROR.cf('/blob/' + secret, None, method='PUT', tag=secret)
+            self.assertNotIn(secret, output.getvalue())
+            self.assertIn('"category": "blob"', output.getvalue())
+            self.assertIn(marker, output.getvalue())
 
     def test_credentials_are_never_forwarded_to_untrusted_download_redirect(self):
         error = urllib.error.HTTPError('https://ghcr.io', 307, '', {'Location': 'https://evil.example/blob'}, None)
