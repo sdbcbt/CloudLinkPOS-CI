@@ -28,7 +28,7 @@ DEPLOY_MANIFEST = ROOT.parent / 'fleet-deploy-manifest.yaml'
 RETRY_ATTEMPTS = 2  # 总共最多 2 次：失败后只再试 1 次
 RETRY_WAIT_SECONDS = 30
 # 镜像推送默认走 registry-upload.py 的分块断点续传：断线后从服务端已收到的位置续传，
-# 进度只增不减，卡住按“60 秒无字节收发”判定。只有仓库不支持分块协议时才退回 docker push，
+# 正常续传保留已确认进度，发送逐段等待，连接与响应分别限时。只有仓库不支持分块协议时才退回 docker push，
 # docker push 断线会让整层从 0 重传，因此只作兜底：单次最长 20 分钟、最多 2 次。
 FALLBACK_PUSH_TIMEOUT_SECONDS = 20 * 60
 FALLBACK_PUSH_ATTEMPTS = 2
@@ -47,19 +47,36 @@ def retry(stage, action, retryable=(Exception,), attempts=None):
             SLEEP(RETRY_WAIT_SECONDS * attempt)
 
 
-def run(args, cwd=None, env=None, data=None, timeout=None, show_error=False):
+def run(args, cwd=None, env=None, data=None, timeout=None, show_error=False, private_admin=False):
     """执行命令；show_error=True 时失败会打印输出末尾，便于判断网络、认证还是限流（不含凭据的命令才可开启）。"""
     try:
         result = subprocess.run(args, cwd=cwd, env=env, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     except subprocess.TimeoutExpired as error:
+        if private_admin:
+            save_admin_failure(error.stdout, error.stderr)
         if show_error:
             tail(error.stdout, error.stderr)
         raise RuntimeError('阶段超时')
     if result.returncode:
+        if private_admin:
+            save_admin_failure(result.stdout, result.stderr)
         if show_error:
             tail(result.stdout, result.stderr)
         raise RuntimeError('阶段失败')
     return result.stdout
+
+
+def save_admin_failure(stdout, stderr):
+    """将后台失败输出仅保存在执行器私有临时文件，禁止向公开日志泄露私库内容。"""
+    content = (stdout or b'') + b'\n' + (stderr or b'')
+    target = Path(os.environ['RUNNER_TEMP']) / 'cloudlinkpos-admin-first-failure.log'
+    try:
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(content)
+    except FileExistsError:
+        pass
+    print('后台构建失败；具体输出仅保存于私有临时日志，并由后续步骤回写私库检查。', flush=True)
 
 
 def tail(stdout, stderr, lines=20):
@@ -249,10 +266,10 @@ def build(service):
             STAGE = '构建管理后台'
             print(STAGE, flush=True)
             # 托管 Runner 直接访问官方源，不运行自建主机的强制代理初始化。
-            run(['pnpm', '--dir', 'apps/admin', 'install', '--frozen-lockfile', '--registry=https://registry.npmjs.org', '--fetch-timeout=120000', '--fetch-retries=2'], ROOT)
+            run(['pnpm', '--dir', 'apps/admin', 'install', '--frozen-lockfile', '--registry=https://registry.npmjs.org', '--fetch-timeout=120000', '--fetch-retries=2'], ROOT, private_admin=True)
             STAGE = '编译管理后台页面'
             print(STAGE, flush=True)
-            run(['pnpm', '--dir', 'apps/admin', 'run', 'build:antd'], ROOT)
+            run(['pnpm', '--dir', 'apps/admin', 'run', 'build:antd'], ROOT, private_admin=True)
             script, extra = 'prepare-admin-ci-context.py', []
         else:
             script, extra = 'prepare-service-ci-context.py', ['--service', service]

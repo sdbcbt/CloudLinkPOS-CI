@@ -6,6 +6,8 @@ import io
 import json
 from pathlib import Path
 import socket
+import threading
+import time
 import tarfile
 import tempfile
 import unittest
@@ -121,7 +123,7 @@ def blob(tmp, name, data):
 
 class UploadTests(unittest.TestCase):
     def setUp(self):
-        self.patches = [patch.object(UP, 'SLEEP', lambda _: None), patch.object(UP, 'CHUNK_BYTES', 10)]
+        self.patches = [patch.object(UP, 'SLEEP', lambda _: None), patch.object(UP, 'CHUNK_BYTES', 10), patch.object(UP, 'MIN_CHUNK_BYTES', 2), patch.object(UP, 'MAX_CHUNK_BYTES', 10)]
         for item in self.patches:
             item.start()
 
@@ -216,6 +218,126 @@ class UploadTests(unittest.TestCase):
             layer = blob(tmp, 'l', b'v' * 500)
             with self.assertRaises(UP.UploadFailed):
                 self.uploader(registry).push(b'{}', [layer], 't')
+
+    def test_resume_uses_rotated_location_and_adapts_chunk_size(self):
+        registry = FakeRegistry(drop_after={1: 3})
+        original = registry.handle
+        sizes, resumed = [], []
+
+        def rotating(method, path, body, headers):
+            if method == 'GET':
+                response = original(method, path, body, headers)
+                response.headers['Location'] = path.split('?')[0] + '?_state=rotated'
+                return response
+            if method == 'PATCH':
+                sizes.append(len(body))
+                if registry.patches == 1:
+                    resumed.append(path)
+            return original(method, path, body, headers)
+        registry.handle = rotating
+        with tempfile.TemporaryDirectory() as tmp:
+            layer = blob(tmp, 'l', b'a' * 40)
+            self.uploader(registry).push(b'{}', [layer], 't')
+        self.assertEqual(sizes[:2], [10, 5])
+        self.assertIn('?_state=rotated', resumed[0])
+        self.assertEqual(registry.blobs[layer[1]], b'a' * 40)
+
+    def test_invalid_or_oversized_ranges_stop_without_manifest(self):
+        for value in ('oops', '5-10', '0-999', '0--1'):
+            with self.subTest(value=value):
+                registry = FakeRegistry(drop_after={1: 3})
+                original = registry.handle
+
+                def invalid(method, path, body, headers):
+                    response = original(method, path, body, headers)
+                    if method == 'GET':
+                        response.headers['Range'] = value
+                    return response
+                registry.handle = invalid
+                with tempfile.TemporaryDirectory() as tmp:
+                    layer = blob(tmp, 'l', b'a' * 40)
+                    with self.assertRaises(UP.UploadFailed):
+                        self.uploader(registry).push(b'{}', [layer], 't')
+                self.assertFalse(registry.manifests)
+
+    def test_successful_chunks_still_obey_total_deadline(self):
+        registry = FakeRegistry()
+        original = registry.handle
+        now = [0]
+
+        def advancing(method, path, body, headers):
+            response = original(method, path, body, headers)
+            if method == 'PATCH':
+                now[0] += 30
+            return response
+        registry.handle = advancing
+        with patch.object(UP, 'CLOCK', lambda: now[0]), patch.object(UP, 'TOTAL_SECONDS', 50), tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(UP.UploadFailed):
+                self.uploader(registry).push(b'{}', [blob(tmp, 'l', b'a' * 100)], 't')
+        self.assertFalse(registry.manifests)
+
+
+class TransportTests(unittest.TestCase):
+    def test_continuously_slow_socket_can_send_longer_than_idle_timeout(self):
+        # 使用真实套接字和背压；整个发送超过超时，但每次有进展，不应被 sendall 总时限截断。
+        sender, receiver = socket.socketpair()
+        sender.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        received = bytearray()
+        data = b'x' * (64 * 1024)
+
+        def drain():
+            while len(received) < len(data):
+                block = receiver.recv(1024)
+                if not block:
+                    break
+                received.extend(block)
+                time.sleep(0.005)
+        thread = threading.Thread(target=drain)
+        thread.start()
+        connection = UP.ProgressHTTPSConnection(HOST, lambda: time.monotonic() + 10)
+        connection.sock = sender
+        started = time.monotonic()
+        try:
+            with patch.object(UP, 'STALL_SECONDS', 0.15):
+                connection.send(data)
+            self.assertGreater(time.monotonic() - started, 0.15)
+        finally:
+            sender.shutdown(socket.SHUT_WR)
+            thread.join(timeout=3)
+            connection.close()
+            receiver.close()
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(received, data)
+        self.assertEqual(connection.transport_bytes, len(data))
+
+    def test_socket_stall_is_not_ignored(self):
+        sender, receiver = socket.socketpair()
+        sender.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        connection = UP.ProgressHTTPSConnection(HOST, lambda: time.monotonic() + 10)
+        connection.sock = sender
+        try:
+            with patch.object(UP, 'STALL_SECONDS', 0.02), self.assertRaises(TimeoutError):
+                connection.send(b'x' * (128 * 1024))
+        finally:
+            connection.close()
+            receiver.close()
+
+    def test_total_deadline_stops_a_progressing_sender(self):
+        now = [0]
+
+        class Socket:
+            def settimeout(self, value):
+                pass
+
+            def send(self, data):
+                now[0] += 20
+                return min(2, len(data))
+        with patch.object(UP, 'CLOCK', lambda: now[0]):
+            connection = UP.ProgressHTTPSConnection(HOST, lambda: 50)
+            connection.sock = Socket()
+            with self.assertRaises(UP.UploadFailed):
+                connection.send(b'x' * 10)
+        self.assertEqual(connection.transport_bytes, 6)
 
 
 def tar_bytes(files):
