@@ -78,10 +78,18 @@ class Mirror(unittest.TestCase):
         with patch.object(MIRROR, 'cf', return_value={'budgetBytes': 9000000000, 'usedBytes': 10, 'reservedBytes': 20}) as cf:
             MIRROR.preflight()
         cf.assert_called_once_with('/status', None, method='GET')
+        # 已满状态仍只读报告，允许构建后在上传准备阶段清理额外历史再判容量。
+        for status in (
+            {'budgetBytes': 9000000000, 'usedBytes': 9000000000, 'reservedBytes': 0},
+            {'budgetBytes': 9000000000, 'usedBytes': 8999999990, 'reservedBytes': 11},
+        ):
+            with self.subTest(status=status), patch.object(MIRROR, 'cf', return_value=status) as full:
+                MIRROR.preflight()
+            full.assert_called_once_with('/status', None, method='GET')
         invalid = [
             {'budgetBytes': 9000000001},
-            {'usedBytes': 9000000000},
-            {'usedBytes': 8999999990, 'reservedBytes': 11},
+            {'usedBytes': -1},
+            {'reservedBytes': -1},
         ]
         for changes in invalid:
             status = {'budgetBytes': 9000000000, 'usedBytes': 10, 'reservedBytes': 20, **changes}

@@ -162,9 +162,10 @@ def preflight():
     """编译前只读核验正式分发入口身份和当前容量，不删除历史版本。"""
     result = cf('/status', None, method='GET')
     budget, used, reserved = (result.get(key) for key in ('budgetBytes', 'usedBytes', 'reservedBytes'))
-    if not all(type(value) is int for value in (budget, used, reserved)) or not 0 < budget <= 9000000000 or used < 0 or reserved < 0 or used + reserved >= budget:
+    if not all(type(value) is int for value in (budget, used, reserved)) or not 0 < budget <= 9000000000 or used < 0 or reserved < 0:
         raise ValueError('CF_CAPACITY_PREFLIGHT_FAILED')
-    print('CF 短期身份及容量预检通过；预算 ' + str(budget) + ' 字节，已用 ' + str(used) + ' 字节，预留 ' + str(reserved) + ' 字节。', flush=True)
+    # 构建完成后的 prepare 才清理过期且无引用的额外版本，再判断本次上传能否预留容量。
+    print('CF 短期身份及只读容量检查通过；上传时安全清理后判定容量；预算 ' + str(budget) + ' 字节，已用 ' + str(used) + ' 字节，预留 ' + str(reserved) + ' 字节。', flush=True)
 
 
 if __name__ == '__main__':
