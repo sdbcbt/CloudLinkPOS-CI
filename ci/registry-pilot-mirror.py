@@ -16,8 +16,25 @@ spec.loader.exec_module(PILOT)
 ORIGIN = 'https://registry-pilot.cloudlinkpos.com'
 
 
+def publication_token():
+    """每次管理请求重新申请短期身份，避免上传期间令牌过期。"""
+    url = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != 'https' or not parsed.hostname or not parsed.hostname.endswith('.actions.githubusercontent.com') or parsed.port not in (None, 443) or parsed.username or parsed.password:
+        raise ValueError('OIDC_ENDPOINT_INVALID')
+    query = [(key, value) for key, value in urllib.parse.parse_qsl(parsed.query) if key != 'audience']
+    query.append(('audience', 'cloudlinkpos-registry-pilot'))
+    url = urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query)))
+    headers = {'Authorization': 'Bearer ' + os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN'], 'User-Agent': 'cloudlinkpos-registry-pilot/1.0'}
+    with urllib.request.build_opener(PILOT.NoRedirect()).open(urllib.request.Request(url, headers=headers), timeout=30) as response:
+        token = json.loads(response.read(32000))['value']
+    if not isinstance(token, str) or not 20 < len(token) < 16000:
+        raise ValueError('OIDC_TOKEN_INVALID')
+    return token
+
+
 def cf(path, value, method='POST', tag=None):
-    headers = {'Authorization': 'Bearer ' + os.environ['PILOT_PUBLISH_TOKEN']}
+    headers = {'Authorization': 'Bearer ' + publication_token(), 'User-Agent': 'cloudlinkpos-registry-pilot/1.0'}
     if isinstance(value, dict):
         data = json.dumps(value).encode()
         headers['Content-Type'] = 'application/json'
@@ -65,8 +82,6 @@ def download_blob(descriptor, destination, bearer):
 
 
 def mirror():
-    if not os.environ.get('PILOT_PUBLISH_TOKEN'):
-        raise ValueError('PILOT_PUBLISH_TOKEN_MISSING')
     receipt_path = Path('registry-pilot-receipt.json')
     receipt = json.loads(receipt_path.read_text())
     sha, tag = PILOT.identity(os.environ)

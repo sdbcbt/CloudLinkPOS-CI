@@ -49,8 +49,10 @@ Android 需要在本公开仓库配置固定正式签名的 `ANDROID_KEYSTORE_BA
 
 `registry-pilot.yml` 固定在 GitHub 托管 Runner 构建 `employee-api`，使用独立私有 GHCR 包 `sdbcbt/cloudlinkpos-registry-pilot` 和不可变试点标签。它不推送正式 ACR、`latest` 或生产收据，也不更新 Fleet。
 
-派发参数 `source_sha` 必须是已合并私库主线的完整 SHA；`mirror_to_cf=false` 只验证 GHCR，`true` 时以短期 GitHub 令牌读取同一镜像并预热 CF/R2。后者需要配置 Secret `PILOT_PUBLISH_TOKEN`，只允许调用固定试点域名的受控发布接口。公开 Artifact 仅保存版本、摘要、私有访问证明和分阶段耗时。
+派发参数 `source_sha` 必须是已合并私库主线的完整 SHA；`mirror_to_cf=false` 只验证 GHCR，`true` 时以短期 GitHub 令牌读取同一镜像并预热 CF/R2。后者使用 GitHub OIDC 短期身份，只允许固定仓库、main、指定工作流和通知机器人调用固定试点域名的受控发布接口，无需添加长期发布 Secret。公开 Artifact 仅保存版本、摘要、私有访问证明和分阶段耗时。
 
 R2 使用同账号独立桶，初始预算为十进制 256 MB；Worker 的只读凭据与发布凭据分开。为避免长期保存 GHCR 凭据，CF 缓存未命中时不自动回源写入；需要通过授权流程重新同步。容量清理、当前版本及固定摘要保护由隔离协调对象执行，客户端响应禁止共享 HTTP 缓存，边缘缓存命中前仍鉴权。
 
 离线检查：`python3 ci/registry-pilot_test.py`、`python3 ci/registry-pilot-mirror_test.py`。Workers 与 R2 的部署、国内测速、费用和验收记录维护在私库 `docs/06-部署运维/GHCR与Cloudflare镜像试点.md`；代码和离线测试通过不表示真实部署完成。
+
+镜像同步与测速客户端发送明确应用 User-Agent，以兼容 Cloudflare Browser Integrity Check。
