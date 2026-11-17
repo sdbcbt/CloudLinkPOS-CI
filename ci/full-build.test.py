@@ -181,7 +181,13 @@ class PushTimeout(unittest.TestCase):
         source = Path(__file__).with_name('full-build.py').read_text()
         self.assertIn("retry(STAGE, lambda: run(['docker', 'push', IMAGE + ':' + version], env=env, timeout=PUSH_TIMEOUT_SECONDS), (RuntimeError,), PUSH_ATTEMPTS)", source)
         self.assertEqual(BUILD.PUSH_TIMEOUT_SECONDS, 5 * 60)
-        self.assertEqual(BUILD.PUSH_ATTEMPTS, 3)
+        self.assertEqual(BUILD.PUSH_ATTEMPTS, 10)
+        # 最坏情况（全部超时 + 递增等待）须留在 job 限时之内，并给构建留出 30 分钟。
+        import yaml
+        workflow = yaml.safe_load((Path(__file__).parents[1] / '.github/workflows/full-version-build.yml').read_text())
+        waits = sum(BUILD.RETRY_WAIT_SECONDS * attempt for attempt in range(1, BUILD.PUSH_ATTEMPTS))
+        worst = BUILD.PUSH_TIMEOUT_SECONDS * BUILD.PUSH_ATTEMPTS + waits
+        self.assertLessEqual(worst + 30 * 60, workflow['jobs']['build']['timeout-minutes'] * 60)
 
     def test_push_attempts_override_default_limit(self):
         calls = []
@@ -192,7 +198,7 @@ class PushTimeout(unittest.TestCase):
         with patch.object(BUILD, 'SLEEP', lambda _: None):
             with self.assertRaises(RuntimeError):
                 BUILD.retry('推送', broken, (RuntimeError,), BUILD.PUSH_ATTEMPTS)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 10)
 
 
 class Concurrency(unittest.TestCase):
@@ -208,7 +214,7 @@ class Concurrency(unittest.TestCase):
         self.assertEqual(receipts['group'], 'full-version-receipts')
         self.assertEqual(receipts['queue'], 'max')
         self.assertNotIn('concurrency', workflow['jobs']['plan'])
-        self.assertEqual(workflow['jobs']['build']['timeout-minutes'], 60)
+        self.assertEqual(workflow['jobs']['build']['timeout-minutes'], 120)
 
 
 if __name__ == '__main__':

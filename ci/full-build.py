@@ -31,7 +31,7 @@ RETRY_ATTEMPTS = 2  # 总共最多 2 次：失败后只再试 1 次
 RETRY_WAIT_SECONDS = 30
 # 镜像不大，正常推送远低于 5 分钟；超过即视为卡住，中止并以同一版本标签重推。
 PUSH_TIMEOUT_SECONDS = 5 * 60
-PUSH_ATTEMPTS = 3  # 推送总共最多 3 次
+PUSH_ATTEMPTS = 10  # 推送总共最多 10 次（跨境推送不稳定时多给机会）
 SLEEP = time.sleep
 
 
