@@ -19,6 +19,7 @@ spec.loader.exec_module(BUILD)
 SERVICE = 'employee-api'
 REPOSITORY = 'sdbcbt/cloudlinkpos-registry-pilot'
 IMAGE = 'ghcr.io/' + REPOSITORY
+STAGE = 'IDENTITY'
 ACCEPT = 'application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json'
 
 
@@ -101,31 +102,40 @@ def push_image(reference, environment):
 
 
 def build():
+    global STAGE
     sha, tag = identity(os.environ)
+    STAGE = 'PACKAGE_PRIVACY'
     check_package_privacy()
     timings = {}
     started = time.monotonic()
     with tempfile.TemporaryDirectory() as directory:
         folder = Path(directory)
         base_output = folder / 'base.out'
+        STAGE = 'BASE_IMAGE'
         BUILD.run(['python3', 'deploy/scripts/pull-ci-base-image.py', '--profile', 'alpine', '--github-output', str(base_output)], BUILD.ROOT)
         base = dict(line.split('=', 1) for line in base_output.read_text().splitlines())['base_image']
         output = folder / 'context'
         command = ['python3', 'deploy/scripts/prepare-service-ci-context.py', '--repo-root', str(BUILD.ROOT), '--output-dir', str(output), '--service', SERVICE, '--release-tag', SERVICE + '-v0.0.' + os.environ['GITHUB_RUN_NUMBER'], '--release-source', 'manual', '--source-sha', sha, '--build-number', os.environ['GITHUB_RUN_NUMBER'], '--run-attempt', os.environ['GITHUB_RUN_ATTEMPT'], '--image-repository', IMAGE, '--base-image', base]
+        STAGE = 'BUILD_CONTEXT'
         BUILD.run(command, BUILD.ROOT)
+        STAGE = 'DOCKER_BUILD'
         BUILD.run(['docker', 'build', '--platform', 'linux/amd64', '-t', IMAGE + ':' + tag, str(output / 'context')])
         timings['build_seconds'] = round(time.monotonic() - started, 3)
         print('试点镜像构建完成：' + str(timings['build_seconds']) + ' 秒', flush=True)
         environment = dict(os.environ, DOCKER_CONFIG=str(folder / 'docker-auth'))
+        STAGE = 'GHCR_LOGIN'
         BUILD.run(['docker', 'login', 'ghcr.io', '-u', os.environ['GITHUB_ACTOR'], '--password-stdin'], env=environment, data=os.environ['GITHUB_TOKEN'].encode())
         try:
             started = time.monotonic()
+            STAGE = 'GHCR_PUSH'
             push_image(IMAGE + ':' + tag, environment)
             timings['push_seconds'] = round(time.monotonic() - started, 3)
+            STAGE = 'DIGEST_INSPECT'
             inspect = BUILD.run(['docker', 'image', 'inspect', IMAGE + ':' + tag, '--format', '{{json .RepoDigests}}'])
             digests = [value.split('@', 1)[1] for value in json.loads(inspect) if value.startswith(IMAGE + '@')]
             if len(digests) != 1 or not re.fullmatch('sha256:[0-9a-f]{64}', digests[0]):
                 raise ValueError('PILOT_DIGEST_INVALID')
+            STAGE = 'PRIVATE_DIGEST_VERIFY'
             manifest = verify(tag, digests[0])
         finally:
             BUILD.run(['docker', 'logout', 'ghcr.io'], env=environment)
@@ -146,5 +156,5 @@ if __name__ == '__main__':
     except Exception as error:
         # 私库源码、编译输出、仓库响应和凭据不进入公开日志。
         category = str(error) if isinstance(error, ValueError) and re.fullmatch('[A-Z_]{3,80}', str(error)) else 'PILOT_STAGE_FAILED'
-        print('::error::镜像试点失败：' + category + '；未写入正式发布收据，也未修改部署。', flush=True)
+        print('::error::镜像试点失败：' + STAGE + '/' + type(error).__name__ + '/' + category + '；未写入正式发布收据，也未修改部署。', flush=True)
         raise SystemExit(1)
