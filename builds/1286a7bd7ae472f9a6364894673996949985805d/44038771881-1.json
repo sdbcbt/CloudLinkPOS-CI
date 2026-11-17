@@ -1,0 +1,40 @@
+{
+  "sourceSHA": "1286a7bd7ae472f9a6364894673996949985805d",
+  "beforeSHA": "002519137f7bea7a989406412f335ee9ce87d8c2",
+  "expectedServices": [
+    "wallet-rpc"
+  ],
+  "publicationPolicy": {
+    "grayRequired": false,
+    "generation": 11
+  },
+  "schema": "cloudlinkpos.public-source-build/v1",
+  "sourceRepository": "sdbcbt/CloudLinkPOS",
+  "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+  "runID": "44038771881",
+  "attempt": "1",
+  "workflowSHA": "6c0ab45234dbc48ea4d4baf4b8c39615f374988a",
+  "workflowPath": ".github/workflows/private-main.yml",
+  "receipts": [
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "1286a7bd7ae472f9a6364894673996949985805d",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "6c0ab45234dbc48ea4d4baf4b8c39615f374988a",
+      "runID": "44038771881",
+      "attempt": "1",
+      "service": "wallet-rpc",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "wallet-rpc-v0.3.19",
+      "digest": "sha256:04ecf567be511d7694d7977a1b117cd9569553277247ef639b3ebaca589d3cd6",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "ba1704cd183d08eb4729c822e8b9d560e499d315a54b05afd4a985f85a118f4e",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:04ecf567be511d7694d7977a1b117cd9569553277247ef639b3ebaca589d3cd6"
+      }
+    }
+  ]
+}
