@@ -1,0 +1,61 @@
+{
+  "sourceSHA": "377837bc450febebdb7f70fca30df04225b0b944",
+  "beforeSHA": "76b547badf4fbe54a9136d7155731b430da2a448",
+  "expectedServices": [
+    "payment-api",
+    "payyeepay-rpc"
+  ],
+  "publicationPolicy": {
+    "grayRequired": false,
+    "generation": 11
+  },
+  "schema": "cloudlinkpos.public-source-build/v1",
+  "sourceRepository": "sdbcbt/CloudLinkPOS",
+  "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+  "runID": "44050906819",
+  "attempt": "1",
+  "workflowSHA": "8dd9e6a72d335f3101f43b8d5a0ddb3a92912487",
+  "workflowPath": ".github/workflows/private-main.yml",
+  "receipts": [
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "377837bc450febebdb7f70fca30df04225b0b944",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "8dd9e6a72d335f3101f43b8d5a0ddb3a92912487",
+      "runID": "44050906819",
+      "attempt": "1",
+      "service": "payment-api",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "payment-api-v0.3.61",
+      "digest": "sha256:d3a26b93d1b95ef2ab775b75a41ed681ec50d44bb046ee4ea39a8ed7ac2e4301",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "e3aa23684cf08cc372a15aeb718b128bae387447673957469be9974beeebcf29",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:d3a26b93d1b95ef2ab775b75a41ed681ec50d44bb046ee4ea39a8ed7ac2e4301"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "377837bc450febebdb7f70fca30df04225b0b944",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "8dd9e6a72d335f3101f43b8d5a0ddb3a92912487",
+      "runID": "44050906819",
+      "attempt": "1",
+      "service": "payyeepay-rpc",
+      "repository": "registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos",
+      "tag": "payyeepay-rpc-v0.1.9",
+      "digest": "sha256:c4cf69cac26f07dc5624d5e28b73e3388da07e02fd29a90f713f43267ad9abda",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "3ab5f8285ff0146d16014e29794a4b9c47a3a5f87183e7ade2bfef55eb139fcf",
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:c4cf69cac26f07dc5624d5e28b73e3388da07e02fd29a90f713f43267ad9abda"
+      }
+    }
+  ]
+}
