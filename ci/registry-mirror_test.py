@@ -66,7 +66,7 @@ class Mirror(unittest.TestCase):
         self.assertIs(caught.exception, original)
         self.assertEqual(calls[-1], '/abort')
 
-    def test_plan_preflight_is_read_only_and_precedes_build_and_source_checkout(self):
+    def test_plan_read_only_preflight_precedes_build_and_source_checkout(self):
         import yaml
         workflow = yaml.safe_load((Path(__file__).parents[1] / '.github/workflows/full-version-build.yml').read_text())
         plan = workflow['jobs']['plan']
@@ -75,11 +75,47 @@ class Mirror(unittest.TestCase):
         preflight = runs.index('python3 automation/ci/registry-mirror.py --preflight')
         self.assertLess(preflight, runs.index('python3 automation/ci/full-build.py checkout'))
         self.assertEqual(workflow['jobs']['build']['needs'], 'plan')
-        with patch.object(MIRROR, 'cf', return_value={'budgetBytes': 100, 'usedBytes': 10, 'reservedBytes': 20}) as cf:
+        with patch.object(MIRROR, 'cf', return_value={'budgetBytes': 9000000000, 'usedBytes': 10, 'reservedBytes': 20}) as cf:
             MIRROR.preflight()
         cf.assert_called_once_with('/status', None, method='GET')
-        with patch.object(MIRROR, 'cf', return_value={'budgetBytes': 100, 'usedBytes': 100, 'reservedBytes': 0}), self.assertRaises(ValueError):
-            MIRROR.preflight()
+        invalid = [
+            {'budgetBytes': 9000000001},
+            {'usedBytes': 9000000000},
+            {'usedBytes': 8999999990, 'reservedBytes': 11},
+        ]
+        for changes in invalid:
+            status = {'budgetBytes': 9000000000, 'usedBytes': 10, 'reservedBytes': 20, **changes}
+            with self.subTest(changes=changes), patch.object(MIRROR, 'cf', return_value=status), self.assertRaises(ValueError):
+                MIRROR.preflight()
+        for reason in ('CF_HTTP_507', 'CF_HTTP_503', 'CF_HTTP_401'):
+            original = ValueError(reason)
+            with self.subTest(reason=reason), patch.object(MIRROR, 'cf', side_effect=original), self.assertRaises(ValueError) as caught:
+                MIRROR.preflight()
+            self.assertIs(caught.exception, original)
+
+    def test_finalize_requires_matching_version_gc_and_retention_confirmation(self):
+        tag, digest = 'employee-api-v0.3.100', 'sha256:' + 'd' * 64
+        result = {'finalized': True, 'gcCompleted': True, 'repository': 'sdbcbt/cloudlinkpos', 'tag': tag, 'digest': digest, 'keepVersions': 2, 'usedBytes': 100, 'budgetBytes': 9000000000}
+        with patch.object(MIRROR, 'cf', return_value=result) as cf:
+            MIRROR.finalize(tag, digest)
+        cf.assert_called_once_with('/finalize', {'tag': tag, 'digest': digest})
+        for changed in ({'finalized': False}, {'gcCompleted': False}, {'digest': 'sha256:' + 'e' * 64}, {'keepVersions': 3}, {'usedBytes': 9000000001}):
+            with self.subTest(changed=changed), patch.object(MIRROR, 'cf', return_value={**result, **changed}), self.assertRaises(ValueError):
+                MIRROR.finalize(tag, digest)
+        with patch.object(MIRROR, 'cf', side_effect=ValueError('CF_HTTP_503')), self.assertRaisesRegex(ValueError, 'CF_HTTP_503'):
+            MIRROR.finalize(tag, digest)
+
+    def test_finalize_is_after_both_registry_checks_and_before_receipt(self):
+        source = Path(__file__).with_name('full-build.py').read_text()
+        mirror = source.index('evidence = mirror.mirror(')
+        latest = source.index('client.update_latest(service, digest)', mirror)
+        finalize = source.index('mirror.finalize(version, digest)', latest)
+        receipt = source.index("receipt = {'schema'", finalize)
+        self.assertLess(mirror, latest)
+        self.assertLess(latest, finalize)
+        self.assertLess(finalize, receipt)
+        calls, _ = self.execute()
+        self.assertNotIn('/finalize', [call[0] for call in calls])
 
     def test_credentials_are_never_forwarded_to_untrusted_download_redirect(self):
         error = urllib.error.HTTPError('https://ghcr.io', 307, '', {'Location': 'https://evil.example/blob'}, None)

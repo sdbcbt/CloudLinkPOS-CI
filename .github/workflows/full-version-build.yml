@@ -52,7 +52,7 @@ jobs:
         with:
           path: automation
           persist-credentials: false
-      - name: 编译前核验正式分发入口身份和容量
+      - name: 编译前只读核验正式分发入口身份和容量
         run: python3 automation/ci/registry-mirror.py --preflight
       - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
         id: auth
