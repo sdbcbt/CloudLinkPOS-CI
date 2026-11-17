@@ -14,8 +14,9 @@ import time
 import urllib.parse
 
 ROOT = Path('source').resolve()
-REGISTRY = 'registry.cn-zhangjiakou.aliyuncs.com'
-IMAGE = REGISTRY + '/sdbcbt/cloudlinkpos'
+REGISTRY = 'ghcr.io'
+ORIGIN_IMAGE = REGISTRY + '/sdbcbt/cloudlinkpos'
+IMAGE = 'registry.cloudlinkpos.com/sdbcbt/cloudlinkpos'
 STAGE = '初始化'
 MANIFEST = 'deploy/helm/cloudlinkpos/fleet/rancher-images.yaml'
 # Fleet 专用部署分支：受管镜像清单迁移后只在此分支更新；名称表明该分支不能删除。
@@ -27,11 +28,7 @@ DEPLOY_MANIFEST = ROOT.parent / 'fleet-deploy-manifest.yaml'
 # 推送前的网络步骤（读源码、读私库标签、拉基础镜像、编译）遇到偶发网络故障时重试。
 RETRY_ATTEMPTS = 2  # 总共最多 2 次：失败后只再试 1 次
 RETRY_WAIT_SECONDS = 30
-# 镜像推送默认走 registry-upload.py 的分块断点续传：断线后从服务端已收到的位置续传，
-# 正常续传保留已确认进度，发送逐段等待，连接与响应分别限时。只有仓库不支持分块协议时才退回 docker push，
-# docker push 断线会让整层从 0 重传，因此只作兜底：单次最长 20 分钟、最多 2 次。
-FALLBACK_PUSH_TIMEOUT_SECONDS = 20 * 60
-FALLBACK_PUSH_ATTEMPTS = 2
+# GHCR 原始镜像只在私有包发布，CF/R2 完整核验后才写正式收据。
 SLEEP = time.sleep
 
 
@@ -86,30 +83,15 @@ def tail(stdout, stderr, lines=20):
 
 
 def push_image(client, version, folder, env):
-    """推送本地镜像并返回 manifest digest：先分块断点续传，仓库不支持时退回 docker push。"""
-    uploader_module = module('registry_upload', Path(__file__).with_name('registry-upload.py'))
-    work = folder / 'push'
-    work.mkdir()
-    archive = work / 'image.tar'
-    run(['docker', 'save', '-o', str(archive), 'local-fullbuild:build'])
-    try:
-        config, layers = uploader_module.prepare_image(archive, work)
-        archive.unlink()
-        for index, (_, digest, size) in enumerate(layers):
-            print('镜像层 layer-' + str(index) + '：' + str(round(size / 1048576, 2)) + ' MiB ' + digest[:19], flush=True)
-        uploader = uploader_module.Uploader(REGISTRY, client.repository, lambda challenge: client.bearer_token(challenge, 'pull,push', True))
-        uploader.token = client.token
-        return uploader.push(config, layers, version)
-    except uploader_module.UploadUnsupported as error:
-        # 只有协议不兼容才兜底；网络持续无进展（UploadFailed）换 docker push 也不会更好，直接失败。
-        print('::warning::仓库不支持分块续传（' + str(error) + '），退回 docker push', flush=True)
-    run(['docker', 'tag', 'local-fullbuild:build', IMAGE + ':' + version], env=env)
-    log = retry('docker push 兜底', lambda: run(['docker', 'push', IMAGE + ':' + version], env=env, timeout=FALLBACK_PUSH_TIMEOUT_SECONDS, show_error=True),
-                (RuntimeError,), FALLBACK_PUSH_ATTEMPTS).decode()
-    found = re.findall(r'digest: (sha256:[0-9a-f]{64})', log)
-    if not found:
-        raise ValueError('缺少推送摘要')
-    return found[-1]
+    """只向 GHCR 推送原始镜像，不输出可能含私有内容的 Docker 响应。"""
+    reference = ORIGIN_IMAGE + ':' + version
+    run(['docker', 'tag', 'local-fullbuild:build', reference], env=env)
+    run(['docker', 'push', reference], env=env, timeout=20 * 60)
+    values = json.loads(run(['docker', 'image', 'inspect', reference, '--format', '{{json .RepoDigests}}'], env=env))
+    digests = [value.split('@', 1)[1] for value in values if value.startswith(ORIGIN_IMAGE + '@')]
+    if len(digests) != 1 or not re.fullmatch('sha256:[0-9a-f]{64}', digests[0]):
+        raise ValueError('GHCR_PUSH_DIGEST_INVALID')
+    return digests[0]
 
 
 def module(name, path):
@@ -197,9 +179,9 @@ def deploy_manifest():
     return DEPLOY_MANIFEST.read_text()
 
 
-def next_version(service, tags):
+def next_version(service, tags, floors=()):
     pattern = re.compile(re.escape(service) + r'-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)')
-    versions = [tuple(int(v) for v in match.groups()) for tag in tags if (match := pattern.fullmatch(tag))]
+    versions = [tuple(int(v) for v in match.groups()) for tag in list(tags) + list(floors) if (match := pattern.fullmatch(tag))]
     major, minor, patch = max(versions, default=(0, 1, 0))
     return f'{service}-v{major}.{minor}.{patch + 1}'
 
@@ -209,6 +191,8 @@ def all_tags(client):
     for _ in range(1000):
         query = urllib.parse.urlencode({'n': 1000, **({'last': last} if last else {})})
         code, _, body = client.authenticated(f'/v2/{client.repository}/tags/list?{query}')
+        if code == 404 and not last:
+            return result
         value = json.loads(body)
         tags = value.get('tags') or []
         if code != 200 or value.get('name') != client.repository or not isinstance(tags, list):
@@ -221,6 +205,60 @@ def all_tags(client):
         last = tags[-1]
     raise ValueError('仓库分页超出上限')
 
+
+
+def fleet_records(content):
+    """读取受管部署清单中的全部版本对象，涵盖正式与灰度状态。"""
+    manifest = json.loads('\n'.join(row for row in content.splitlines() if not row.lstrip().startswith('#')))
+    records = []
+    def visit(value):
+        if isinstance(value, dict):
+            if 'repository' in value and 'tag' in value and 'digest' in value:
+                if not re.fullmatch('sha256:[0-9a-f]{64}', value['digest']):
+                    raise ValueError('FLEET_DIGEST_INVALID')
+                records.append(value)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+    visit(manifest)
+    if not records:
+        raise ValueError('FLEET_DEPLOYMENT_RECORDS_MISSING')
+    return records
+
+
+def fresh_fleet_records():
+    """在发布保护前重读 Fleet 分支，认证失败和缺失不得回退旧快照。"""
+    credential = base64.b64encode(('x-access-token:' + os.environ['SOURCE_TOKEN']).encode()).decode()
+    env = dict(os.environ, GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader', GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + credential)
+    if DEPLOY_MANIFEST.exists():
+        DEPLOY_MANIFEST.unlink()
+    fetch_deploy_manifest(env)
+    if not DEPLOY_MANIFEST.exists():
+        raise ValueError('FLEET_DEPLOY_BRANCH_REQUIRED')
+    return fleet_records(DEPLOY_MANIFEST.read_text())
+
+
+def baseline_floors():
+    """只读取输入源码提交中的受控迁移版本基线，不信任可变工作目录。"""
+    sha = os.environ['SOURCE_SHA']
+    if not re.fullmatch('[0-9a-f]{40}', sha):
+        raise ValueError('BASELINE_SOURCE_SHA_INVALID')
+    path = 'deploy/ci/registry-version-baseline.json'
+    tracked = run(['git', 'ls-tree', '--name-only', sha, '--', path], ROOT).decode().splitlines()
+    if not tracked:
+        return {}
+    if tracked != [path]:
+        raise ValueError('BASELINE_PATH_INVALID')
+    value = json.loads(run(['git', 'show', sha + ':' + path], ROOT))
+    services = value.get('services')
+    if value.get('schema') != 'cloudlinkpos.registry-baseline/v1' or not isinstance(services, dict):
+        raise ValueError('BASELINE_SCHEMA_INVALID')
+    for service, tag in services.items():
+        if not re.fullmatch('[a-z][a-z0-9]*(?:-[a-z0-9]+)*', service) or not isinstance(tag, str) or not re.fullmatch(re.escape(service) + r'-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag):
+            raise ValueError('BASELINE_VERSION_INVALID')
+    return services
 
 
 def stamp_admin_version(output, version):
@@ -244,14 +282,23 @@ def stamp_admin_version(output, version):
 
 def build(service):
     global STAGE
-    publisher = module('acr_publish', ROOT / 'deploy/scripts/publish-acr-image.py')
-    client = publisher.Registry(REGISTRY, 'sdbcbt', 'cloudlinkpos', os.environ['ACR_USERNAME'], os.environ['ACR_PASSWORD'])
+    publisher = module('ghcr_publish', Path(__file__).with_name('ghcr-publish.py'))
+    mirror = module('registry_mirror', Path(__file__).with_name('registry-mirror.py'))
+    client = publisher.Registry()
     STAGE = '验证私有仓库与正式版本'
     print(STAGE, flush=True)
 
     def resolve_version():
         client.check_private_existing()
-        candidate = next_version(service, all_tags(client))
+        records = fresh_fleet_records()
+        floors = [record['tag'] for record in records if record['tag'].startswith(service + '-v')]
+        baseline = baseline_floors().get(service)
+        if baseline:
+            floors.append(baseline)
+        tags = all_tags(client)
+        if not floors and not any(tag.startswith(service + '-v') for tag in tags):
+            raise ValueError('SERVICE_VERSION_FLOOR_REQUIRED')
+        candidate = next_version(service, tags, floors)
         client.reject_existing_tags([candidate])
         return candidate
     # 只读核验与版本计算，网络超时可安全重试。
@@ -286,20 +333,21 @@ def build(service):
         # 仅将版本号推送到注册表，不使用上下文 SHA 标签。
         client.reject_existing_tags([version])
         env = dict(os.environ, DOCKER_CONFIG=str(folder / 'docker'))
-        run(['docker', 'login', REGISTRY, '-u', os.environ['ACR_USERNAME'], '--password-stdin'], env=env, data=os.environ['ACR_PASSWORD'].encode())
+        run(['docker', 'login', REGISTRY, '-u', os.environ['GITHUB_ACTOR'], '--password-stdin'], env=env, data=os.environ['GITHUB_TOKEN'].encode())
         try:
             STAGE = '发布并回读固定版本'
             print(STAGE, flush=True)
             digest = push_image(client, version, folder, env)
             client.verify_image(version, digest)
-            evidence = client.prove_private(digest)
+            origin_evidence = client.prove_private(digest)
+            raw = client.verify_image(version, digest)
+            evidence = mirror.mirror(service, version, digest, raw, lambda: sorted({record['digest'] for record in fresh_fleet_records()}))
             STAGE = '更新并核验 latest'
             print(STAGE, flush=True)
-            run(['docker', 'buildx', 'imagetools', 'create', '--prefer-index=false', '-t', IMAGE + ':' + service + '-latest', IMAGE + '@' + digest], env=env)
-            client.verify_image(service + '-latest', digest)
+            client.update_latest(service, digest)
         finally:
             run(['docker', 'logout', REGISTRY], env=env)
-        receipt = {'schema': 'cloudlinkpos.public-full-build/v1', 'sourceRepository': 'sdbcbt/CloudLinkPOS', 'sourceSHA': os.environ['SOURCE_SHA'], 'buildRepository': os.environ['GITHUB_REPOSITORY'], 'workflowSHA': os.environ['GITHUB_SHA'], 'runID': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'service': service, 'repository': IMAGE, 'tag': version, 'digest': digest, 'privateEvidence': evidence, 'tagPolicy': 'version-and-latest-v1', 'metadataSHA256': hashlib.sha256((output / 'release.json').read_bytes()).hexdigest()}
+        receipt = {'schema': 'cloudlinkpos.public-full-build/v1', 'sourceRepository': 'sdbcbt/CloudLinkPOS', 'sourceSHA': os.environ['SOURCE_SHA'], 'buildRepository': os.environ['GITHUB_REPOSITORY'], 'workflowSHA': os.environ['GITHUB_SHA'], 'runID': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'service': service, 'repository': IMAGE, 'tag': version, 'digest': digest, 'privateEvidence': evidence, 'origin': {'repository': ORIGIN_IMAGE, 'digest': digest, 'privateEvidence': origin_evidence}, 'tagPolicy': 'version-and-latest-v1', 'metadataSHA256': hashlib.sha256((output / 'release.json').read_bytes()).hexdigest()}
         dest = Path('receipts')
         dest.mkdir(exist_ok=True)
         (dest / (service + '.json')).write_text(json.dumps(receipt, indent=2) + '\n')
@@ -349,5 +397,6 @@ if __name__ == '__main__':
         main()
     except Exception as error:
         # 只输出异常类别与本仓库/发布脚本定义的固定原因文本，便于区分网络、协议与核验失败。
-        print('::error::全量构建停止于：' + STAGE + '（' + type(error).__name__ + '：' + str(error)[:200] + '）', file=sys.stderr)
+        category = str(error) if isinstance(error, ValueError) and re.fullmatch('[A-Z_0-9]{3,80}', str(error)) else 'BUILD_STAGE_FAILED'
+        print('::error::全量构建停止于：' + STAGE + '（' + type(error).__name__ + '/' + category + '）', file=sys.stderr)
         sys.exit(1)

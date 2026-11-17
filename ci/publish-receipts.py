@@ -9,7 +9,7 @@ import urllib.request
 
 REPO = 'sdbcbt/CloudLinkPOS-CI'
 BRANCH = 'source-build-receipts'
-IMAGE = 'registry.cn-zhangjiakou.aliyuncs.com/sdbcbt/cloudlinkpos'
+IMAGE = 'registry.cloudlinkpos.com/sdbcbt/cloudlinkpos'
 
 
 def api(method, path, value=None):
@@ -46,8 +46,13 @@ def build_batch(folder, env):
         evidence = item['privateEvidence']
         if item['repository'] != IMAGE or not re.fullmatch(re.escape(name) + r'-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', item['tag']) or not re.fullmatch('sha256:[0-9a-f]{64}', item['digest']) or item['tagPolicy'] != 'version-and-latest-v1' or evidence.get('authenticated_read') is not True or evidence.get('anonymous_pull_denied') is not True or evidence.get('image_digest') != item['digest']:
             raise ValueError('镜像版本或私有访问证据无效')
+        origin = item.get('origin', {})
+        origin_evidence = origin.get('privateEvidence', {})
+        if origin.get('repository') != 'ghcr.io/sdbcbt/cloudlinkpos' or origin.get('digest') != item['digest'] or origin_evidence.get('authenticated_read') is not True or origin_evidence.get('anonymous_pull_denied') is not True or origin_evidence.get('image_digest') != item['digest']:
+            raise ValueError('GHCR 原始镜像证据无效')
         # 明确白名单，避免构建工具新增字段时泄漏源码或凭据。
         receipts[name] = {key: item[key] for key in ('schema', 'sourceRepository', 'sourceSHA', 'buildRepository', 'workflowSHA', 'runID', 'attempt', 'service', 'repository', 'tag', 'digest', 'tagPolicy', 'metadataSHA256')}
+        receipts[name]['origin'] = {'repository': origin['repository'], 'digest': origin['digest'], 'privateEvidence': {key: origin_evidence[key] for key in ('authenticated_read', 'anonymous_pull_denied', 'image_digest')}}
         receipts[name]['privateEvidence'] = {key: evidence[key] for key in ('authenticated_read', 'anonymous_pull_denied', 'image_digest')}
     if set(receipts) != set(names):
         raise ValueError('选定服务的成功收据未齐')

@@ -1,10 +1,10 @@
 name: 全量构建与镜像推送测试
 on:
   pull_request:
-    paths: ['ci/full-build*', 'ci/registry-pilot*', '.github/workflows/registry-pilot.yml', 'ci/registry-upload*', 'ci/report-admin-failure*', 'ci/report-pos-failure.py', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
+    paths: ['ci/full-build*', 'ci/registry-pilot*', 'ci/ghcr-publish*', 'ci/registry-mirror*', 'ci/publish-receipts*', '.github/workflows/registry-pilot.yml', 'ci/registry-upload*', 'ci/report-admin-failure*', 'ci/report-pos-failure.py', '.github/workflows/private-main.yml', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
   push:
     branches: [main]
-    paths: ['ci/full-build*', 'ci/registry-pilot*', '.github/workflows/registry-pilot.yml', 'ci/registry-upload*', 'ci/report-admin-failure*', 'ci/report-pos-failure.py', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
+    paths: ['ci/full-build*', 'ci/registry-pilot*', 'ci/ghcr-publish*', 'ci/registry-mirror*', 'ci/publish-receipts*', '.github/workflows/registry-pilot.yml', 'ci/registry-upload*', 'ci/report-admin-failure*', 'ci/report-pos-failure.py', '.github/workflows/private-main.yml', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
 permissions:
   contents: read
 jobs:
@@ -22,9 +22,13 @@ jobs:
           python-version: '3.12'
       - name: 准备固定 YAML 解析器
         run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
-      - name: 验证版本计算、分块断点续传与 docker push 兜底
+      - name: 验证版本延续、GHCR 私有原始镜像与 CF 国内发布
         run: |
           python3 ci/full-build.test.py
+          python3 ci/ghcr-publish_test.py
+          python3 ci/registry-mirror_test.py
+          python3 ci/publish-receipts_test.py
+          python3 ci/workflow-receipts_test.py
           python3 ci/registry-upload_test.py
           python3 ci/registry-pilot_test.py
           python3 ci/registry-pilot-mirror_test.py
