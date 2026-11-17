@@ -1,0 +1,83 @@
+name: GHCR 与 R2 单服务试点
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 已合并私库主线的完整提交，仅构建 employee-api 试点
+        type: string
+        required: true
+      mirror_to_cf:
+        description: 同步到 CF/R2 隔离试点，需要先配置试点发布凭据
+        type: boolean
+        default: false
+permissions: {}
+concurrency:
+  group: registry-pilot-publication
+  cancel-in-progress: false
+  queue: max
+jobs:
+  build:
+    if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 核验通知机器人派发
+        env:
+          DISPATCH_ACTOR: ${{ github.actor }}
+        run: |
+          if [[ "$DISPATCH_ACTOR" != 'cloudlinkpos-ci-notifier[bot]' ]]; then
+            echo '::error::只接受已授权通知机器人派发的隔离试点。'
+            exit 1
+          fi
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: automation
+          persist-credentials: false
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        id: auth
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: sdbcbt
+          repositories: CloudLinkPOS
+          permission-contents: read
+      - name: 静默读取固定私库主线
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_TOKEN: ${{ steps.auth.outputs.token }}
+        run: python3 automation/ci/full-build.py checkout
+      - id: setup-go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        continue-on-error: true
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - name: Go 安装源故障兜底
+        if: steps.setup-go.outcome == 'failure'
+        run: bash automation/ci/setup-go-fallback.sh 1.26.5
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2
+        with:
+          version: v0.20.1
+          driver: docker
+      - name: 构建并推送私有 GHCR，核验摘要并记录耗时
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 automation/ci/registry-pilot.py
+      - name: 将同一镜像同步到 CF/R2 并记录耗时
+        if: inputs.mirror_to_cf
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PILOT_PUBLISH_TOKEN: ${{ secrets.PILOT_PUBLISH_TOKEN }}
+        run: python3 automation/ci/registry-pilot-mirror.py
+      - name: 仅保存试点版本、摘要和耗时
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: registry-pilot-receipt-${{ github.run_attempt }}
+          path: registry-pilot-receipt.json
+          if-no-files-found: error
+          retention-days: 7
