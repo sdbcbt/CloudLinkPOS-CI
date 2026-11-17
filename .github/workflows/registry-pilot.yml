@@ -37,6 +37,9 @@ jobs:
         with:
           path: automation
           persist-credentials: false
+      - name: 构建前核验 CF 短期发布身份和容量
+        if: inputs.mirror_to_cf
+        run: python3 automation/ci/registry-pilot-mirror.py --preflight
       - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
         id: auth
         with:
