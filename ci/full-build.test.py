@@ -177,63 +177,61 @@ class Push(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 BUILD.run(['docker', 'push', 'x'], timeout=1)
 
-    def run_push(self, push_result):
-        class Module:
-            class UploadUnsupported(Exception):
-                pass
-
-            class UploadFailed(Exception):
-                pass
-
-            @staticmethod
-            def prepare_image(archive, work):
-                return b'{}', [(work / 'l', 'sha256:' + 'a' * 64, 1048576)]
-
-            class Uploader:
-                def __init__(self, *args):
-                    self.token = ''
-
-                def push(self, config, layers, tag):
-                    if isinstance(push_result, Exception):
-                        raise push_result
-                    return push_result
-
-        class Client:
-            repository = 'sdbcbt/cloudlinkpos'
-            token = 't'
+    def test_ghcr_push_checks_local_repo_digest_without_acr_fallback(self):
         commands = []
+        digest = 'sha256:' + 'a' * 64
 
-        def fake_run(args, cwd=None, env=None, data=None, timeout=None, show_error=False):
+        def fake(args, **kwargs):
             commands.append(args)
-            if args[:2] == ['docker', 'save']:
-                Path(args[3]).write_bytes(b'')
-            if args[:2] == ['docker', 'push']:
-                return b'digest: sha256:' + b'b' * 64 + b' size: 1'
+            if args[:3] == ['docker', 'image', 'inspect']:
+                return json.dumps([BUILD.ORIGIN_IMAGE + '@' + digest]).encode()
             return b''
-        push_result = push_result(Module) if callable(push_result) and not isinstance(push_result, str) else push_result
-        with tempfile.TemporaryDirectory() as folder, patch.object(BUILD, 'module', return_value=Module), patch.object(BUILD, 'run', fake_run):
-            digest = BUILD.push_image(Client(), 'svc-v1.0.1', Path(folder), {})
-        return digest, commands
+        with patch.object(BUILD, 'run', fake):
+            self.assertEqual(BUILD.push_image(None, 'svc-v1.0.1', Path('/tmp'), {}), digest)
+        self.assertEqual(commands[1], ['docker', 'push', 'ghcr.io/sdbcbt/cloudlinkpos:svc-v1.0.1'])
 
-    def test_resumable_upload_is_used_first(self):
-        digest, commands = self.run_push('sha256:' + 'c' * 64)
-        self.assertEqual(digest, 'sha256:' + 'c' * 64)
-        self.assertFalse([c for c in commands if c[:2] == ['docker', 'push']])
+    def test_fleet_floor_prevents_empty_ghcr_reset(self):
+        self.assertEqual(BUILD.next_version('svc', [], ['svc-v2.3.99']), 'svc-v2.3.100')
+        self.assertEqual(BUILD.next_version('svc', ['svc-v2.4.1'], ['svc-v2.3.99']), 'svc-v2.4.2')
 
-    def test_unsupported_protocol_falls_back_to_docker_push(self):
-        digest, commands = self.run_push(lambda module: module.UploadUnsupported('x'))
-        self.assertEqual(digest, 'sha256:' + 'b' * 64)
-        push = [c for c in commands if c[:2] == ['docker', 'push']]
-        self.assertEqual(len(push), 1)
+    def test_fleet_records_include_stable_and_candidate_and_reject_invalid_digest(self):
+        row = {'tag': 'svc-v2.0.0', 'digest': 'sha256:' + 'a' * 64, 'repository': BUILD.IMAGE}
+        self.assertEqual(BUILD.fleet_records(json.dumps({'stable': {'services': {'svc': row}}, 'canary': {'svc': row}})), [row, row])
+        with self.assertRaises(ValueError):
+            BUILD.fleet_records('{}')
+        row['digest'] = 'invalid'
+        with self.assertRaises(ValueError):
+            BUILD.fleet_records(json.dumps({'stable': row}))
 
-    def test_network_failure_does_not_fall_back(self):
-        with self.assertRaises(Exception) as caught:
-            self.run_push(lambda module: module.UploadFailed('无进展'))
-        self.assertEqual(type(caught.exception).__name__, 'UploadFailed')
 
-    def test_fallback_limits(self):
-        self.assertEqual(BUILD.FALLBACK_PUSH_ATTEMPTS, 2)
-        self.assertEqual(BUILD.FALLBACK_PUSH_TIMEOUT_SECONDS, 20 * 60)
+class Baseline(unittest.TestCase):
+    def execute(self, value, sha='a' * 40):
+        calls = []
+        path = 'deploy/ci/registry-version-baseline.json'
+        def run(args, cwd=None):
+            calls.append(args)
+            if args[1] == 'ls-tree':
+                return (path + '\n').encode() if value is not None else b''
+            return json.dumps(value).encode()
+        with patch.dict(BUILD.os.environ, {'SOURCE_SHA': sha}), patch.object(BUILD, 'run', side_effect=run):
+            return BUILD.baseline_floors(), calls
+
+    def test_baseline_is_read_from_input_sha_not_head_or_working_copy(self):
+        value = {'schema': 'cloudlinkpos.registry-baseline/v1', 'services': {'applyment-api': 'applyment-api-v0.3.88'}}
+        floors, calls = self.execute(value)
+        self.assertEqual(floors, value['services'])
+        self.assertEqual(calls[-1], ['git', 'show', 'a' * 40 + ':deploy/ci/registry-version-baseline.json'])
+        self.assertEqual(BUILD.next_version('applyment-api', ['applyment-api-v0.3.90'], floors.values()), 'applyment-api-v0.3.91')
+
+    def test_missing_optional_baseline_returns_no_floor(self):
+        self.assertEqual(self.execute(None)[0], {})
+
+    def test_wrong_schema_cross_service_tag_and_invalid_sha_are_rejected(self):
+        for value in ({'schema': 'other', 'services': {}}, {'schema': 'cloudlinkpos.registry-baseline/v1', 'services': {'applyment-api': 'other-v9.0.0'}}):
+            with self.assertRaises(ValueError):
+                self.execute(value)
+        with self.assertRaises(ValueError):
+            self.execute(None, 'main')
 
 
 class Concurrency(unittest.TestCase):

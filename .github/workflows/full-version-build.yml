@@ -28,6 +28,9 @@ on:
 permissions: {}
 jobs:
   plan:
+    permissions:
+      contents: read
+      id-token: write
     if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -49,6 +52,8 @@ jobs:
         with:
           path: automation
           persist-credentials: false
+      - name: 编译前核验正式分发入口身份和容量
+        run: python3 automation/ci/registry-mirror.py --preflight
       - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
         id: auth
         with:
@@ -88,11 +93,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   build:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     if: needs.plan.outputs.has_services == 'true'
     needs: plan
     runs-on: ubuntu-24.04
-    # 推送走分块断点续传（ci/registry-upload.py）：发送分段无进展或等待响应 60 秒后重试，上传总上限 75 分钟；
-    # 仓库不支持分块协议时才退回 docker push（单次 20 分钟、最多 2 次）。另加构建时间。
+    # GHCR 保存私有原始镜像；CF/R2 同摘要分发和访问核验完成后才生成正式收据。
     timeout-minutes: 120
     # 按服务串行：同一服务的版本号计算与推送不并发，不同服务、无需构建的运行互不等待。
     concurrency:
@@ -154,8 +162,8 @@ jobs:
           driver: docker
       - name: 构建并发布不可覆盖的正式版本
         env:
-          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_TOKEN: ${{ steps.auth.outputs.token }}
         run: python3 automation/ci/full-build.py build
       - name: 仅保存版本和摘要收据
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

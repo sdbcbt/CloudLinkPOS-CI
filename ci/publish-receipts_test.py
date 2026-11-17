@@ -17,6 +17,7 @@ class PublicReceipts(unittest.TestCase):
             env = {'GITHUB_SHA': 'c' * 40, 'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '2'}
             plan = {'schema': 'cloudlinkpos.public-source-plan/v1', 'sourceSHA': 'b' * 40, 'beforeSHA': 'a' * 40, 'expectedServices': ['user-api'], 'publicationPolicy': {'grayRequired': False, 'generation': 1}}
             receipt = {'schema': 'cloudlinkpos.public-full-build/v1', 'sourceRepository': 'sdbcbt/CloudLinkPOS', 'sourceSHA': 'b' * 40, 'buildRepository': PUBLISH.REPO, 'workflowSHA': env['GITHUB_SHA'], 'runID': '123', 'attempt': '2', 'service': 'user-api', 'repository': PUBLISH.IMAGE, 'tag': 'user-api-v1.2.4', 'digest': 'sha256:' + 'd' * 64, 'tagPolicy': 'version-and-latest-v1', 'metadataSHA256': 'e' * 64, 'privateEvidence': {'authenticated_read': True, 'anonymous_pull_denied': True, 'image_digest': 'sha256:' + 'd' * 64, 'unexpected': 'private'}, 'unexpected': 'private'}
+            receipt['origin'] = {'repository': 'ghcr.io/sdbcbt/cloudlinkpos', 'digest': receipt['digest'], 'privateEvidence': dict(receipt['privateEvidence'])}
             if mutate:
                 mutate(plan, receipt)
             (root / 'source-build-plan.json').write_text(json.dumps(plan))
@@ -30,7 +31,7 @@ class PublicReceipts(unittest.TestCase):
         self.assertEqual(batch['publicationPolicy'], {'grayRequired': False, 'generation': 1})
 
     def test_wrong_source_attempt_tag_or_incomplete_batch_is_rejected(self):
-        changes = [lambda p, r: r.update(sourceSHA='f' * 40), lambda p, r: r.update(attempt='1'), lambda p, r: r.update(tag='user-api-latest'), lambda p, r: p['expectedServices'].append('user-rpc'), lambda p, r: p.update(publicationPolicy={'grayRequired': None, 'generation': 1}), lambda p, r: r['privateEvidence'].update(anonymous_pull_denied=False)]
+        changes = [lambda p, r: r.update(sourceSHA='f' * 40), lambda p, r: r.update(attempt='1'), lambda p, r: r.update(tag='user-api-latest'), lambda p, r: p['expectedServices'].append('user-rpc'), lambda p, r: p.update(publicationPolicy={'grayRequired': None, 'generation': 1}), lambda p, r: r['privateEvidence'].update(anonymous_pull_denied=False), lambda p, r: r['origin'].update(repository='public.example/repo'), lambda p, r: r['origin']['privateEvidence'].update(anonymous_pull_denied=False)]
         for change in changes:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.execute(change)

@@ -21,6 +21,8 @@ jobs:
     permissions:
       contents: write
       actions: read
+      packages: write
+      id-token: write
     uses: ./.github/workflows/full-version-build.yml
     with:
       source_sha: ${{ inputs.after }}
