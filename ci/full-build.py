@@ -345,6 +345,8 @@ def build(service):
             STAGE = '更新并核验 latest'
             print(STAGE, flush=True)
             client.update_latest(service, digest)
+            STAGE = '成功发布后清理历史版本'
+            mirror.finalize(version, digest)
         finally:
             run(['docker', 'logout', REGISTRY], env=env)
         receipt = {'schema': 'cloudlinkpos.public-full-build/v1', 'sourceRepository': 'sdbcbt/CloudLinkPOS', 'sourceSHA': os.environ['SOURCE_SHA'], 'buildRepository': os.environ['GITHUB_REPOSITORY'], 'workflowSHA': os.environ['GITHUB_SHA'], 'runID': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'service': service, 'repository': IMAGE, 'tag': version, 'digest': digest, 'privateEvidence': evidence, 'origin': {'repository': ORIGIN_IMAGE, 'digest': digest, 'privateEvidence': origin_evidence}, 'tagPolicy': 'version-and-latest-v1', 'metadataSHA256': hashlib.sha256((output / 'release.json').read_bytes()).hexdigest()}

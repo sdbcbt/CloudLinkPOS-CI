@@ -148,11 +148,21 @@ def mirror(service, tag, digest, raw, refresh_deployment):
         raise
 
 
+def finalize(tag, digest):
+    """双端发布核验成功后确认版本并安全回收，失败不得生成成功收据。"""
+    result = cf('/finalize', {'tag': tag, 'digest': digest})
+    if result.get('finalized') is not True or result.get('gcCompleted') is not True or result.get('repository') != PILOT.REPOSITORY or result.get('tag') != tag or result.get('digest') != digest or type(result.get('keepVersions')) is not int or result['keepVersions'] != 2:
+        raise ValueError('CF_FINALIZE_VERIFICATION_FAILED')
+    used, budget = (result.get(key) for key in ('usedBytes', 'budgetBytes'))
+    if type(used) is not int or type(budget) is not int or used < 0 or not 0 < budget <= 9000000000 or used > budget:
+        raise ValueError('CF_FINALIZE_CAPACITY_INVALID')
+
+
 def preflight():
-    """编译前只读核验正式分发入口身份和当前容量，不创建发布或保护状态。"""
+    """编译前只读核验正式分发入口身份和当前容量，不删除历史版本。"""
     result = cf('/status', None, method='GET')
     budget, used, reserved = (result.get(key) for key in ('budgetBytes', 'usedBytes', 'reservedBytes'))
-    if not all(type(value) is int for value in (budget, used, reserved)) or not 0 < budget <= 8000000000 or used < 0 or reserved < 0 or used + reserved >= budget:
+    if not all(type(value) is int for value in (budget, used, reserved)) or not 0 < budget <= 9000000000 or used < 0 or reserved < 0 or used + reserved >= budget:
         raise ValueError('CF_CAPACITY_PREFLIGHT_FAILED')
     print('CF 短期身份及容量预检通过；预算 ' + str(budget) + ' 字节，已用 ' + str(used) + ' 字节，预留 ' + str(reserved) + ' 字节。', flush=True)
 
