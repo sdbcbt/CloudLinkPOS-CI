@@ -2,6 +2,7 @@
 import hashlib
 import base64
 import re
+import random
 import sys
 import importlib.util
 import json
@@ -18,6 +19,13 @@ PILOT = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(PILOT)
 ORIGIN = 'https://registry.cloudlinkpos.com'
 STAGE = 'RECEIPT'
+PUBLICATION_WAIT_SECONDS = 45 * 60
+
+
+class PublicationBusy(ValueError):
+    def __init__(self, retry_after=5):
+        super().__init__('PUBLICATION_BUSY')
+        self.retry_after = retry_after
 
 
 def publication_token():
@@ -54,28 +62,45 @@ def publication_token():
 
 
 def cf(path, value, method='POST', tag=None):
-    headers = {'Authorization': 'Bearer ' + publication_token(), 'User-Agent': 'cloudlinkpos-registry/1.0'}
-    if value is None:
-        data = None
-    elif isinstance(value, dict):
-        data = json.dumps(value).encode()
-        headers['Content-Type'] = 'application/json'
-    else:
-        data = value.open('rb')
-        headers['Content-Length'] = str(value.stat().st_size)
-        headers['X-Registry-Tag'] = tag
-        headers['Content-Type'] = 'application/octet-stream'
+    """执行受限管理请求，只记录固定类别、耗时及状态，禁止输出凭据与原始响应。"""
+    started = time.monotonic()
+    data = None
+    status = None
+    exception = None
+    category = 'blob' if path.startswith('/blob/') else 'pins' if path.startswith('/pins/') else path.removeprefix('/') if path in ('/prepare', '/commit', '/verify', '/finalize', '/status', '/abort') else 'other'
     try:
+        headers = {'Authorization': 'Bearer ' + publication_token(), 'User-Agent': 'cloudlinkpos-registry/1.0'}
+        if isinstance(value, dict):
+            data = json.dumps(value).encode()
+            headers['Content-Type'] = 'application/json'
+        elif value is not None:
+            data = value.open('rb')
+            headers['Content-Length'] = str(value.stat().st_size)
+            headers['X-Registry-Tag'] = tag
+            headers['Content-Type'] = 'application/octet-stream'
         request = urllib.request.Request(ORIGIN + '/_registry' + path, data=data, method=method, headers=headers)
-        with urllib.request.build_opener(PILOT.NoRedirect()).open(request, timeout=120) as response:
+        with urllib.request.build_opener(PILOT.NoRedirect()).open(request, timeout=600) as response:
+            status = response.status
             return json.loads(response.read(200_000))
     except urllib.error.HTTPError as error:
+        status = error.code
+        exception = 'HTTPError'
+        if path == '/prepare' and error.code == 429 and error.headers.get('x-registry-publication-busy') == '1':
+            retry_after = error.headers.get('Retry-After', '5')
+            delay = int(retry_after) if re.fullmatch('[0-9]{1,2}', retry_after) else 5
+            raise PublicationBusy(max(1, min(delay, 30))) from None
         reason = error.headers.get('x-registry-auth-reason', '')
         suffix = '_' + reason if reason in ('FORMAT', 'HEADER', 'TIME', 'CLAIMS', 'KEY_FETCH', 'KEY_ID', 'KEY_IMPORT', 'SIGNATURE', 'CREDENTIALS') else ''
         raise ValueError('CF_HTTP_' + str(error.code) + suffix) from None
+    except Exception as error:
+        name = type(error).__name__
+        exception = name if name in ('TimeoutError', 'URLError', 'ConnectionError', 'ConnectionResetError', 'OSError', 'ValueError', 'JSONDecodeError', 'TypeError') else 'OtherError'
+        raise
     finally:
         if hasattr(data, 'close'):
             data.close()
+        event = {'category': category, 'method': method if method in ('GET', 'POST', 'PUT') else 'OTHER', 'elapsedSeconds': round(max(0, time.monotonic() - started), 3), 'httpStatus': status if type(status) is int and 100 <= status <= 599 else None, 'exception': exception}
+        print('CF 请求状态：' + json.dumps(event, ensure_ascii=False), flush=True)
 
 
 def download_blob(descriptor, destination, bearer):
@@ -107,6 +132,25 @@ def download_blob(descriptor, destination, bearer):
     raise ValueError('GHCR_BLOB_REDIRECT_LIMIT')
 
 
+def prepare_publication(service, tag, raw):
+    """仅在正式入口明确报告发布槽繁忙时等待，认证、容量和其他失败立即返回。"""
+    started = time.monotonic()
+    waiting = False
+    while True:
+        if waiting and time.monotonic() - started >= PUBLICATION_WAIT_SECONDS:
+            raise ValueError('CF_PUBLICATION_WAIT_TIMEOUT')
+        try:
+            return cf('/prepare', {'service': service, 'tag': tag, 'manifest': raw.decode()})
+        except PublicationBusy as error:
+            remaining = PUBLICATION_WAIT_SECONDS - (time.monotonic() - started)
+            if remaining <= 0:
+                raise ValueError('CF_PUBLICATION_WAIT_TIMEOUT') from None
+            if not waiting:
+                print('CF 两个发布槽均繁忙，等待空闲槽；最多等待 45 分钟。', flush=True)
+                waiting = True
+            time.sleep(min(max(error.retry_after, random.uniform(5, 15)), remaining))
+
+
 def mirror(service, tag, digest, raw, refresh_deployment):
     """先保护当前部署，再上传原始 GHCR 内容，所有证据验证通过后才返回收据。"""
     client = PILOT.Registry()
@@ -115,7 +159,7 @@ def mirror(service, tag, digest, raw, refresh_deployment):
     # 网络读取失败必须终止，不能拿 checkout 时的旧清单替代保护范围。
     deployed = refresh_deployment()
     cf('/pins/add', {'repository': PILOT.REPOSITORY, 'digests': deployed, 'ttlSeconds': 172800, 'operationId': 'ci-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT']})
-    plan = cf('/prepare', {'service': service, 'tag': tag, 'manifest': raw.decode()})
+    plan = prepare_publication(service, tag, raw)
     try:
         if plan.get('digest') != digest:
             raise ValueError('CF_DIGEST_MISMATCH')
