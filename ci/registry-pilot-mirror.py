@@ -2,6 +2,7 @@
 import hashlib
 import base64
 import re
+import sys
 import importlib.util
 import json
 import os
@@ -51,7 +52,9 @@ def publication_token():
 
 def cf(path, value, method='POST', tag=None):
     headers = {'Authorization': 'Bearer ' + publication_token(), 'User-Agent': 'cloudlinkpos-registry-pilot/1.0'}
-    if isinstance(value, dict):
+    if value is None:
+        data = None
+    elif isinstance(value, dict):
         data = json.dumps(value).encode()
         headers['Content-Type'] = 'application/json'
     else:
@@ -64,7 +67,9 @@ def cf(path, value, method='POST', tag=None):
         with urllib.request.build_opener(PILOT.NoRedirect()).open(request, timeout=120) as response:
             return json.loads(response.read(200_000))
     except urllib.error.HTTPError as error:
-        raise ValueError('CF_HTTP_' + str(error.code)) from None
+        reason = error.headers.get('x-pilot-auth-reason', '')
+        suffix = '_' + reason if reason in ('FORMAT', 'HEADER', 'TIME', 'CLAIMS', 'KEY_FETCH', 'KEY_ID', 'KEY_IMPORT', 'SIGNATURE', 'CREDENTIALS') else ''
+        raise ValueError('CF_HTTP_' + str(error.code) + suffix) from None
     finally:
         if hasattr(data, 'close'):
             data.close()
@@ -148,7 +153,14 @@ def mirror():
 
 if __name__ == '__main__':
     try:
-        mirror()
+        if sys.argv[1:] == ['--preflight']:
+            STAGE = 'CF_AUTH_PREFLIGHT'
+            result = cf('/status', None, method='GET')
+            print('CF 短期发布身份核验成功，预算 ' + str(result['budgetBytes']) + ' 字节，已用 ' + str(result['usedBytes']) + ' 字节。', flush=True)
+        elif sys.argv[1:]:
+            raise ValueError('PILOT_ARGUMENTS_INVALID')
+        else:
+            mirror()
     except Exception as error:
         category = str(error) if isinstance(error, ValueError) and re.fullmatch('[A-Z_0-9]{3,80}', str(error)) else 'SYNC_FAILED'
         print('::error::CF 镜像缓存同步失败：' + STAGE + '/' + type(error).__name__ + '/' + category + '；未修改正式发布和部署。', flush=True)

@@ -48,6 +48,16 @@ class Mirror(unittest.TestCase):
         with patch.dict(os.environ, dict(env, ACTIONS_ID_TOKEN_REQUEST_URL='https://attacker.invalid/token')), self.assertRaises(ValueError):
             MIRROR.publication_token()
 
+    def test_preflight_is_read_only_and_auth_errors_are_safe(self):
+        class Opener:
+            def open(inner, request, timeout):
+                self.assertEqual(request.method, 'GET')
+                self.assertIsNone(request.data)
+                raise urllib.error.HTTPError(request.full_url, 401, 'unsafe fixture secret', {'x-pilot-auth-reason': 'HEADER'}, None)
+        with patch.object(MIRROR, 'publication_token', return_value='fixture'), patch.object(MIRROR.urllib.request, 'build_opener', return_value=Opener()):
+            with self.assertRaisesRegex(ValueError, '^CF_HTTP_401_HEADER$'):
+                MIRROR.cf('/status', None, method='GET')
+
     def test_cdn_redirect_does_not_receive_ghcr_bearer(self):
         calls = self.run_download('https://pkg-containers.githubusercontent.com/blob?fixture=signed')
         self.assertEqual(calls[0].get_header('Authorization'), 'Bearer fixture-private-token')
