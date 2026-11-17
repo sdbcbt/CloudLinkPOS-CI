@@ -1,0 +1,115 @@
+"""把已核验的私有 GHCR 试点镜像同步至有容量上限的 CF/R2，不改变镜像摘要。"""
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+spec = importlib.util.spec_from_file_location('registry_pilot', Path(__file__).with_name('registry-pilot.py'))
+PILOT = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(PILOT)
+ORIGIN = 'https://registry-pilot.cloudlinkpos.com'
+
+
+def cf(path, value, method='POST', tag=None):
+    headers = {'Authorization': 'Bearer ' + os.environ['PILOT_PUBLISH_TOKEN']}
+    if isinstance(value, dict):
+        data = json.dumps(value).encode()
+        headers['Content-Type'] = 'application/json'
+    else:
+        data = value.open('rb')
+        headers['Content-Length'] = str(value.stat().st_size)
+        headers['X-Pilot-Tag'] = tag
+        headers['Content-Type'] = 'application/octet-stream'
+    try:
+        request = urllib.request.Request(ORIGIN + '/_pilot' + path, data=data, method=method, headers=headers)
+        with urllib.request.build_opener(PILOT.NoRedirect()).open(request, timeout=120) as response:
+            return json.loads(response.read(200_000))
+    finally:
+        if hasattr(data, 'close'):
+            data.close()
+
+
+def download_blob(descriptor, destination, bearer):
+    url = 'https://ghcr.io/v2/' + PILOT.REPOSITORY + '/blobs/' + descriptor['digest']
+    opener = urllib.request.build_opener(PILOT.NoRedirect())
+    for _ in range(5):
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme != 'https' or parsed.hostname not in ('ghcr.io', 'pkg-containers.githubusercontent.com') or parsed.port not in (None, 443) or parsed.username or parsed.password:
+            raise ValueError('UNTRUSTED_BLOB_REDIRECT')
+        headers = {'Authorization': 'Bearer ' + bearer} if parsed.hostname == 'ghcr.io' else {}
+        try:
+            response = opener.open(urllib.request.Request(url, headers=headers), timeout=60)
+        except urllib.error.HTTPError as error:
+            if error.code in (301, 302, 303, 307, 308) and error.headers.get('Location'):
+                url = urllib.parse.urljoin(url, error.headers['Location'])
+                continue
+            raise ValueError('GHCR_BLOB_DOWNLOAD_FAILED') from None
+        digest, size = hashlib.sha256(), 0
+        with response, destination.open('wb') as stream:
+            while block := response.read(128 * 1024):
+                size += len(block)
+                if size > descriptor['size']:
+                    raise ValueError('GHCR_BLOB_SIZE_MISMATCH')
+                digest.update(block)
+                stream.write(block)
+        if size != descriptor['size'] or 'sha256:' + digest.hexdigest() != descriptor['digest']:
+            raise ValueError('GHCR_BLOB_DIGEST_MISMATCH')
+        return
+    raise ValueError('GHCR_BLOB_REDIRECT_LIMIT')
+
+
+def mirror():
+    if not os.environ.get('PILOT_PUBLISH_TOKEN'):
+        raise ValueError('PILOT_PUBLISH_TOKEN_MISSING')
+    receipt_path = Path('registry-pilot-receipt.json')
+    receipt = json.loads(receipt_path.read_text())
+    sha, tag = PILOT.identity(os.environ)
+    if receipt['sourceSHA'] != sha or receipt['tag'] != tag or receipt['image'] != PILOT.IMAGE:
+        raise ValueError('PILOT_RECEIPT_MISMATCH')
+    bearer = PILOT.token()
+    status, _, raw = PILOT.request('https://ghcr.io/v2/' + PILOT.REPOSITORY + '/manifests/' + receipt['digest'], {'Authorization': 'Bearer ' + bearer, 'Accept': PILOT.ACCEPT})
+    if status != 200 or 'sha256:' + hashlib.sha256(raw).hexdigest() != receipt['digest']:
+        raise ValueError('PILOT_MANIFEST_MISMATCH')
+    started = time.monotonic()
+    planned = False
+    try:
+        plan = cf('/prepare', {'tag': tag, 'manifest': raw.decode()})
+        planned = True
+        if plan['digest'] != receipt['digest']:
+            raise ValueError('CF_DIGEST_MISMATCH')
+        transferred = 0
+        with tempfile.TemporaryDirectory() as directory:
+            for index, descriptor in enumerate(plan['missing']):
+                file = Path(directory) / 'blob'
+                download_blob(descriptor, file, bearer)
+                cf('/blob/' + descriptor['digest'], file, method='PUT', tag=tag)
+                transferred += descriptor['size']
+                file.unlink()
+                print('CF 已核验镜像层 ' + str(index + 1) + '，累计 ' + str(transferred) + ' 字节', flush=True)
+        result = cf('/commit', {'tag': tag, 'digest': receipt['digest']})
+        if result['digest'] != receipt['digest']:
+            raise ValueError('CF_COMMIT_MISMATCH')
+        receipt['cf'] = {'origin': ORIGIN, 'digest': result['digest'], 'stored_bytes': result['usedBytes'], 'transferred_bytes': transferred, 'mirror_seconds': round(time.monotonic() - started, 3)}
+        receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+        print(json.dumps(receipt['cf'], ensure_ascii=False), flush=True)
+    except Exception:
+        if planned:
+            try:
+                cf('/abort', {'tag': tag})
+            except Exception:
+                pass
+        raise
+
+
+if __name__ == '__main__':
+    try:
+        mirror()
+    except Exception:
+        print('::error::CF 镜像缓存同步失败；未修改正式发布和部署。', flush=True)
+        raise SystemExit(1)
