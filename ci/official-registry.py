@@ -219,7 +219,10 @@ def activate_latest(service, digest, raw, origin):
         except ValueError:
             actual_origin = prior_origin
         if actual_origin == digest and manifest_head(reference) == digest:
-            return
+            headers, _ = request('HEAD', '/delivery/' + reference, {200})
+            if headers.get('Docker-Content-Digest') == digest:
+                return
+            raise ValueError('OCI_LATEST_READBACK_FAILED') from None
         if manifest_head(reference) == digest and prior != digest:
             restore_latest(reference, prior)
         raise
