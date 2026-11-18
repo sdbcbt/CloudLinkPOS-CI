@@ -123,7 +123,12 @@ def cf_once(path, value, method='POST', tag=None):
         request = urllib.request.Request(ORIGIN + '/_registry' + path, data=data, method=method, headers=headers)
         with urllib.request.build_opener(PILOT.NoRedirect()).open(request, timeout=600) as response:
             status = response.status
-            return json.loads(response.read(200_000))
+            # 状态响应包含版本及保护记录，读取上限独立于其他发布接口。
+            response_limit = 2_000_000 if method == 'GET' and path == '/status' else 200_000
+            raw = response.read(response_limit + 1)
+            if len(raw) > response_limit:
+                raise ValueError('CF_RESPONSE_TOO_LARGE')
+            return json.loads(raw)
     except urllib.error.HTTPError as error:
         status = error.code
         exception = 'HTTPError'

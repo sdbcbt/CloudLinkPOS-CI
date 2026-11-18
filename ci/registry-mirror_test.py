@@ -1,5 +1,6 @@
 """核对正式同步的保护顺序、访问证据和不可信重定向边界。"""
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -100,6 +101,34 @@ class Mirror(unittest.TestCase):
             with self.subTest(reason=reason), patch.object(MIRROR, 'cf', side_effect=original), self.assertRaises(ValueError) as caught:
                 MIRROR.preflight()
             self.assertIs(caught.exception, original)
+
+    def test_preflight_reads_status_larger_than_the_original_limit(self):
+        payload = {
+            'budgetBytes': 9000000000,
+            'usedBytes': 10,
+            'reservedBytes': 20,
+            'pins': ['sha256:' + 'a' * 64] * 3000,
+        }
+        response = io.BytesIO(json.dumps(payload).encode())
+        response.status = 200
+        self.assertGreater(len(response.getvalue()), 200_000)
+        with patch.object(MIRROR, 'publication_token', return_value='test-token'), \
+                patch.object(MIRROR.urllib.request.OpenerDirector, 'open', return_value=response):
+            MIRROR.preflight()
+
+    def test_registry_rejects_oversized_responses_without_parsing(self):
+        cases = (
+            ('/status', 'GET', 2_000_000),
+            ('/verify', 'POST', 200_000),
+        )
+        for path, method, response_limit in cases:
+            response = io.BytesIO(b' ' * (response_limit + 1) + b'{}')
+            response.status = 200
+            with self.subTest(path=path), \
+                    patch.object(MIRROR, 'publication_token', return_value='test-token'), \
+                    patch.object(MIRROR.urllib.request.OpenerDirector, 'open', return_value=response), \
+                    self.assertRaisesRegex(ValueError, '^CF_RESPONSE_TOO_LARGE$'):
+                MIRROR.cf_once(path, None, method=method)
 
     def test_finalize_requires_matching_version_gc_and_retention_confirmation(self):
         tag, digest = 'employee-api-v0.3.100', 'sha256:' + 'd' * 64
