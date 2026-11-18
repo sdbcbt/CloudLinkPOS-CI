@@ -21,6 +21,16 @@ spec.loader.exec_module(PILOT)
 ORIGIN = 'https://registry.cloudlinkpos.com'
 STAGE = 'RECEIPT'
 PUBLICATION_WAIT_SECONDS = 45 * 60
+# 与Worker保持一致：只有JWKS获取瞬态故障兼容旧401重试，不放宽身份或签名拒绝。
+TRANSIENT_AUTH_REASONS = frozenset({
+    'KEY_FETCH_TIMEOUTERROR', 'KEY_FETCH_ABORTERROR', 'KEY_FETCH_TYPEERROR', 'KEY_FETCH_ERROR',
+    'JWKS_HTTP_429', 'JWKS_HTTP_500', 'JWKS_HTTP_502', 'JWKS_HTTP_503', 'JWKS_HTTP_504',
+})
+SAFE_AUTH_REASONS = TRANSIENT_AUTH_REASONS | frozenset({
+    'FORMAT', 'HEADER', 'TIME', 'CLAIMS', 'KEY_FETCH', 'KEY_FETCH_SYNTAXERROR',
+    'KEY_ID', 'KEY_IMPORT', 'SIGNATURE', 'CREDENTIALS',
+}) | frozenset('JWKS_HTTP_' + str(status) for status in range(100, 600))
+
 
 
 class PublicationBusy(ValueError):
@@ -98,6 +108,7 @@ def cf_once(path, value, method='POST', tag=None):
     exception = None
     reason_class = None
     reason_errno = None
+    auth_reason = None
     category = 'blob' if path.startswith('/blob/') else 'pins' if path.startswith('/pins/') else path.removeprefix('/') if path in ('/prepare', '/commit', '/verify', '/finalize', '/status', '/abort') else 'other'
     try:
         headers = {'Authorization': 'Bearer ' + publication_token(), 'User-Agent': 'cloudlinkpos-registry/1.0'}
@@ -120,10 +131,11 @@ def cf_once(path, value, method='POST', tag=None):
             retry_after = error.headers.get('Retry-After', '5')
             delay = int(retry_after) if re.fullmatch('[0-9]{1,2}', retry_after) else 5
             raise PublicationBusy(max(1, min(delay, 30))) from None
-        if error.code in (502, 503, 504):
-            raise TransientHttpError('CF_HTTP_' + str(error.code), error.code) from None
         reason = error.headers.get('x-registry-auth-reason', '')
-        suffix = '_' + reason if reason in ('FORMAT', 'HEADER', 'TIME', 'CLAIMS', 'KEY_FETCH', 'KEY_ID', 'KEY_IMPORT', 'SIGNATURE', 'CREDENTIALS') else ''
+        auth_reason = reason if reason in SAFE_AUTH_REASONS else None
+        suffix = '_' + auth_reason if auth_reason is not None else ''
+        if error.code in (502, 503, 504) or (error.code == 401 and auth_reason in TRANSIENT_AUTH_REASONS):
+            raise TransientHttpError('CF_HTTP_' + str(error.code) + suffix, error.code) from None
         raise ValueError('CF_HTTP_' + str(error.code) + suffix) from None
     except Exception as error:
         reason = error.reason if isinstance(error, urllib.error.URLError) else error
@@ -140,6 +152,8 @@ def cf_once(path, value, method='POST', tag=None):
         if hasattr(data, 'close'):
             data.close()
         event = {'category': category, 'method': method if method in ('GET', 'POST', 'PUT') else 'OTHER', 'elapsedSeconds': round(max(0, time.monotonic() - started), 3), 'httpStatus': status if type(status) is int and 100 <= status <= 599 else None, 'exception': exception, 'reasonClass': reason_class, 'reasonErrno': reason_errno}
+        if auth_reason is not None:
+            event['authReason'] = auth_reason
         print('CF 请求状态：' + json.dumps(event, ensure_ascii=False), flush=True)
 
 

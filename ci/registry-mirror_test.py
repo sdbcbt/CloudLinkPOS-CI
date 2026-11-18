@@ -313,6 +313,73 @@ class Mirror(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=error), self.assertRaisesRegex(ValueError, 'UNTRUSTED_BLOB_REDIRECT'):
             MIRROR.download_blob({'digest': 'sha256:' + 'd' * 64, 'size': 10}, Path(directory) / 'blob', 'private-token')
 
+    def test_legacy_transient_auth_401_retries_with_fresh_identity_and_safe_reason(self):
+        import io
+        from contextlib import redirect_stdout
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b'{}'
+        for reason in sorted(MIRROR.TRANSIENT_AUTH_REASONS):
+            failure = urllib.error.HTTPError('https://private-fixture.invalid', 401, 'private-body-marker', {'x-registry-auth-reason': reason}, None)
+            with self.subTest(reason=reason), patch.object(MIRROR, 'publication_token', side_effect=['first-secret-token', 'fresh-secret-token']) as token, patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=[failure, response]) as opened, patch.object(MIRROR.time, 'sleep') as sleep, redirect_stdout(io.StringIO()) as log:
+                self.assertEqual(MIRROR.cf('/verify', {}), {})
+            self.assertEqual(opened.call_count, 2)
+            self.assertEqual(token.call_count, 2)
+            sleep.assert_called_once_with(1)
+            self.assertEqual(opened.call_args_list[0].args[0].get_header('Authorization'), 'Bearer first-secret-token')
+            self.assertEqual(opened.call_args_list[1].args[0].get_header('Authorization'), 'Bearer fresh-secret-token')
+            self.assertIn('"authReason": "' + reason + '"', log.getvalue())
+            self.assertNotIn('secret-token', log.getvalue())
+            self.assertNotIn('private-fixture', log.getvalue())
+            self.assertNotIn('private-body-marker', log.getvalue())
+
+    def test_permanent_or_unknown_401_never_retries_or_exposes_unknown_reason(self):
+        import io
+        from contextlib import redirect_stdout
+        permanent = ['', 'FORMAT', 'HEADER', 'TIME', 'CLAIMS', 'KEY_FETCH', 'KEY_FETCH_SYNTAXERROR', 'KEY_ID', 'KEY_IMPORT', 'SIGNATURE', 'CREDENTIALS', 'JWKS_HTTP_401', 'JWKS_HTTP_404', 'KEY_FETCH_TIMEOUTERROR_PRIVATE_SECRET']
+        for reason in permanent:
+            failure = urllib.error.HTTPError('https://private.invalid', 401, 'private-body', {'x-registry-auth-reason': reason, 'x-private-debug': 'private-header'}, None)
+            with self.subTest(reason=reason), patch.object(MIRROR, 'publication_token', return_value='private-token'), patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=failure) as opened, patch.object(MIRROR.time, 'sleep') as sleep, redirect_stdout(io.StringIO()) as log, self.assertRaises(ValueError) as caught:
+                MIRROR.cf('/prepare', {})
+            self.assertIs(type(caught.exception), ValueError)
+            self.assertEqual(opened.call_count, 1)
+            sleep.assert_not_called()
+            self.assertNotIn('PRIVATE_SECRET', log.getvalue() + str(caught.exception))
+            self.assertNotIn('private-header', log.getvalue())
+            self.assertNotIn('private-body', log.getvalue())
+            if reason not in MIRROR.SAFE_AUTH_REASONS:
+                self.assertNotIn('authReason', log.getvalue())
+
+    def test_transient_auth_exhausts_four_attempts_and_abort_is_not_retried(self):
+        reason = 'KEY_FETCH_TIMEOUTERROR'
+        failure = urllib.error.HTTPError('https://private.invalid', 401, '', {'x-registry-auth-reason': reason}, None)
+        with patch.object(MIRROR, 'publication_token', return_value='private-token') as token, patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=failure) as opened, patch.object(MIRROR.time, 'sleep') as sleep, self.assertRaises(MIRROR.TransientHttpError):
+            MIRROR.cf('/pins/add', {})
+        self.assertEqual(opened.call_count, 4)
+        self.assertEqual(token.call_count, 4)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 3, 6])
+        with patch.object(MIRROR, 'publication_token', return_value='private-token'), patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=failure) as opened, patch.object(MIRROR.time, 'sleep') as sleep, self.assertRaises(MIRROR.TransientHttpError):
+            MIRROR.cf('/abort', {})
+        self.assertEqual(opened.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_worker_503_logs_only_allowlisted_auth_reason(self):
+        import io
+        from contextlib import redirect_stdout
+        for reason in ('KEY_FETCH_TYPEERROR', 'JWKS_HTTP_503', 'JWKS_HTTP_503_PRIVATE_SECRET'):
+            failure = urllib.error.HTTPError('https://private.invalid', 503, 'private-body', {'x-registry-auth-reason': reason}, None)
+            with self.subTest(reason=reason), patch.object(MIRROR, 'publication_token', return_value='private-token'), patch.object(MIRROR.urllib.request.OpenerDirector, 'open', side_effect=failure), redirect_stdout(io.StringIO()) as log, self.assertRaises(MIRROR.TransientHttpError) as caught:
+                MIRROR.cf_once('/verify', {})
+            self.assertNotIn('PRIVATE_SECRET', log.getvalue() + str(caught.exception))
+            self.assertNotIn('private-body', log.getvalue())
+            if reason in MIRROR.SAFE_AUTH_REASONS:
+                self.assertIn('"authReason": "' + reason + '"', log.getvalue())
+            else:
+                self.assertNotIn('authReason', log.getvalue())
+
+
 
 if __name__ == '__main__':
     unittest.main()
