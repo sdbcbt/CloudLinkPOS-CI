@@ -1,0 +1,36 @@
+name: 私有镜像迁移容量盘点
+on:
+  push:
+    branches: [codex/registry-migration-inventory]
+    paths:
+      - .github/workflows/registry-migration-inventory.yml
+      - ci/registry-migration-inventory.py
+permissions: {}
+jobs:
+  inventory:
+    if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/codex/registry-migration-inventory'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        id: fleet
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: sdbcbt
+          repositories: CloudLinkPOS
+          permission-contents: read
+      - name: 盘点 Fleet 已知保护和每服务最新两个版本
+        env:
+          SOURCE_TOKEN: ${{ steps.fleet.outputs.token }}
+          CLOUDLINKPOS_GHCR_USERNAME: ${{ github.actor }}
+          CLOUDLINKPOS_GHCR_READ_TOKEN: ${{ github.token }}
+        run: |
+          mkdir source
+          python3 ci/registry-migration-inventory.py --fleet --existing-bytes 6944547881
