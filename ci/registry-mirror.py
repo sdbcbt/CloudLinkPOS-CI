@@ -200,7 +200,7 @@ def prepare_publication(service, tag, raw):
             if remaining <= 0:
                 raise ValueError('CF_PUBLICATION_WAIT_TIMEOUT') from None
             if not waiting:
-                print('CF 两个发布槽均繁忙，等待空闲槽；最多等待 45 分钟。', flush=True)
+                print('CF 发布槽已满，等待空闲槽；最多等待 45 分钟。', flush=True)
                 waiting = True
             time.sleep(min(max(error.retry_after, random.uniform(5, 15)), remaining))
 
