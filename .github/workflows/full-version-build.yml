@@ -52,8 +52,8 @@ jobs:
         with:
           path: automation
           persist-credentials: false
-      - name: 编译前只读核验正式分发入口身份和容量
-        run: python3 automation/ci/official-registry.py
+      - name: 编译前核验正式拉取代理和 GHCR 回源
+        run: python3 automation/ci/ghcr-delivery.py
       - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
         id: auth
         with:
@@ -100,7 +100,7 @@ jobs:
     if: needs.plan.outputs.has_services == 'true'
     needs: plan
     runs-on: ubuntu-24.04
-    # GHCR 保存私有原始镜像；CF/R2 同摘要分发和访问核验完成后才生成正式收据。
+    # GHCR 保存镜像，Cloudflare 只读回源核验通过后生成正式收据。
     timeout-minutes: 120
     # 按服务串行：同一服务的版本号计算与推送不并发，不同服务、无需构建的运行互不等待。
     concurrency:
@@ -165,11 +165,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           SOURCE_TOKEN: ${{ steps.auth.outputs.token }}
         run: python3 automation/ci/full-build.py build
-      - name: 仅保存待同步版本和摘要
+      - name: 仅保存本次已验证的版本和摘要收据
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: candidate-${{ matrix.service }}-attempt-${{ github.run_attempt }}
-          path: candidates/*.json
+          name: receipt-${{ matrix.service }}-attempt-${{ github.run_attempt }}
+          path: receipts/*.json
           if-no-files-found: error
           retention-days: 7
       - name: 检查后台私有失败日志
@@ -195,56 +195,9 @@ jobs:
           ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
         run: python3 automation/ci/report-admin-failure.py
-  distribute:
-    if: needs.build.result == 'success'
-    needs: [plan, build]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    concurrency:
-      group: official-oci-publication
-      cancel-in-progress: false
-      queue: max
-    permissions:
-      contents: read
-      actions: read
-      packages: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          path: automation
-          persist-credentials: false
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
-        with:
-          pattern: candidate-*-attempt-${{ github.run_attempt }}
-          path: candidates
-          merge-multiple: true
-      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
-        id: source
-        with:
-          app-id: ${{ vars.CI_APP_ID }}
-          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
-          owner: sdbcbt
-          repositories: CloudLinkPOS
-          permission-contents: read
-      - name: 通过官方 OCI 串行同步并核验摘要
-        env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
-          SOURCE_TOKEN: ${{ steps.source.outputs.token }}
-          GITHUB_TOKEN: ${{ github.token }}
-          EXPECTED_MATRIX: ${{ needs.plan.outputs.matrix }}
-        run: |
-          mkdir source
-          python3 automation/ci/publish-official-images.py
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: oci-receipts-attempt-${{ github.run_attempt }}
-          path: receipts/*.json
-          if-no-files-found: error
-          retention-days: 7
   publish-receipts:
-    if: always() && inputs.publish_receipts && needs.plan.result == 'success' && ((needs.build.result == 'success' && needs.distribute.result == 'success') || needs.build.result == 'skipped')
-    needs: [plan, build, distribute]
+    if: always() && inputs.publish_receipts && needs.plan.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    needs: [plan, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # 收据分支以非强制方式更新，多个运行同时写入会互相拒绝，因此单独串行。
@@ -269,8 +222,9 @@ jobs:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         if: needs.build.result == 'success'
         with:
-          name: oci-receipts-attempt-${{ github.run_attempt }}
+          pattern: receipt-*-attempt-${{ github.run_attempt }}
           path: input
+          merge-multiple: true
       - name: 保存公开构建收据供发布服务读取
         env:
           RECEIPT_TOKEN: ${{ github.token }}
