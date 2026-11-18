@@ -49,7 +49,7 @@ def read_candidates(folder, env):
 def main():
     registry = local_module('official-registry')
     build = local_module('full-build')
-    origin = registry.SOURCE.PILOT.Registry()
+    origin = registry.SOURCE.GHCR.Registry()
     candidates = read_candidates(Path('candidates'), os.environ)
     def fleet_digests():
         return {item['digest'] for item in build.fresh_fleet_records() if item['repository'] == build.IMAGE}

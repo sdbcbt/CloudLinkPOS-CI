@@ -20,7 +20,7 @@ TAGS = re.compile(r'([a-z][a-z0-9-]*)-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9
 SHA = re.compile(r'sha256:[0-9a-f]{64}')
 CACHE = None
 CACHE_UNTIL = 0
-spec = importlib.util.spec_from_file_location('registry_source', Path(__file__).with_name('registry-mirror.py'))
+spec = importlib.util.spec_from_file_location('registry_source', Path(__file__).with_name('official-registry-source.py'))
 SOURCE = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(SOURCE)
 
@@ -54,7 +54,7 @@ def request(method, path, expected, data=None, headers=None):
 
 
 def send(rq):
-    opener = urllib.request.build_opener(SOURCE.PILOT.NoRedirect())
+    opener = urllib.request.build_opener(SOURCE.GHCR.NoRedirect())
     try:
         with opener.open(rq, timeout=180) as response:
             return response.status, response.headers, response.read(2_000_000)
@@ -117,7 +117,7 @@ def blob_exists(item):
 
 def upload(item, directory):
     target = directory / 'blob'
-    SOURCE.download_blob(item, target, SOURCE.PILOT.token())
+    SOURCE.download_blob(item, target, SOURCE.GHCR.token())
     headers, _ = request('POST', V2 + '/blobs/uploads/', {202}, data=b'')
     url = urllib.parse.urlsplit(urllib.parse.urljoin(PUBLISHER, headers['Location']))
     if url.scheme != 'https' or url.netloc != urllib.parse.urlsplit(PUBLISHER).netloc or not url.path.startswith(V2 + '/blobs/uploads/'):
