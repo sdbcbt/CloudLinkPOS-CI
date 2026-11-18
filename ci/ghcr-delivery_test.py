@@ -60,7 +60,8 @@ class DeliveryVerification(unittest.TestCase):
         registry.return_value.update_latest.side_effect = TimeoutError
         self.assertEqual(DELIVERY.promote(entry, 'oidc'), 'admin')
         registry.return_value.update_latest.reset_mock(side_effect=True)
-        verify.side_effect = ValueError('OCI_DELIVERY_READBACK_FAILED')
+        latest.side_effect = [(DIGEST, MANIFEST), (prior, b'previous')]
+        verify.side_effect = [ValueError('OCI_DELIVERY_READBACK_FAILED'), None]
         with self.assertRaisesRegex(ValueError, 'OCI_DELIVERY_READBACK_FAILED'):
             DELIVERY.promote(entry, 'oidc')
         self.assertEqual(registry.return_value.update_latest.call_args_list, [

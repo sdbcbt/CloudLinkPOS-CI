@@ -137,25 +137,47 @@ def prepare_promotion(entry, token):
     return service, digest, raw, previous
 
 
+def confirm_latest(client, reference, digest):
+    for attempt in range(4):
+        try:
+            actual, raw = latest_manifest(client, reference)
+            if actual == digest:
+                return raw
+        except (ValueError, urllib.error.URLError, TimeoutError, ConnectionError):
+            pass
+        if attempt < 3:
+            time.sleep(2 ** attempt)
+    raise ValueError('GHCR_LATEST_STATE_UNCONFIRMED')
+
+
+def write_latest(client, service, digest):
+    try:
+        client.update_latest(service, digest)
+    except (ValueError, urllib.error.URLError, TimeoutError, ConnectionError):
+        # 超时或临时读回失败时，PUT 仍可能在源站完成。
+        return confirm_latest(client, service + '-latest', digest)
+    return None
+
+
 def promote(entry, token):
     service, digest, raw, previous = entry
     reference = service + '-latest'
     client = SOURCE.GHCR.Registry()
+    if previous != digest:
+        write_latest(client, service, digest)
     try:
-        if previous != digest:
-            client.update_latest(service, digest)
         verify_manifest(reference, digest, raw, token)
     except Exception:
-        # PUT 超时可能已生效。先核对源站和代理，再确认或恢复别名。
-        actual, _ = latest_manifest(client, reference)
-        if actual != digest:
-            raise
-        try:
-            verify_manifest(reference, digest, raw, token)
-        except Exception:
-            if previous and previous != digest:
-                client.update_latest(service, previous)
-            raise
+        if previous and previous != digest:
+            try:
+                # 只补偿当前批次的写入，确认源站和正式代理都回到原摘要。
+                confirm_latest(client, reference, digest)
+                write_latest(client, service, previous)
+                previous_raw = confirm_latest(client, reference, previous)
+                verify_manifest(reference, previous, previous_raw, token)
+            except Exception:
+                raise ValueError('GHCR_LATEST_RESTORE_UNCONFIRMED') from None
+        raise
     return service
 
 
