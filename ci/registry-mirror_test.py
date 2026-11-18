@@ -147,7 +147,7 @@ class Mirror(unittest.TestCase):
         origin = source.index('raw = origin.verify_image(')
         publish = source.index("item['privateEvidence'] = registry.publish(")
         latest = source.index('registry.activate_latest(')
-        collect = source.rindex('registry.collect(protected)')
+        collect = source.rindex('registry.collect(protected, fleet_digests)')
         receipt = source.index("work = Path('receipts')")
         self.assertEqual(sorted([origin, publish, collect, latest, receipt]), [origin, publish, collect, latest, receipt])
 

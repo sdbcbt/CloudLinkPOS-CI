@@ -75,8 +75,10 @@ def storage():
 def preflight():
     request('GET', '/v2/', {200})
     expected = manifest_head('admin-latest')
-    headers, _ = request('HEAD', '/delivery/admin-latest', {200})
-    if not expected or headers.get('Docker-Content-Digest') != expected:
+    if not expected or not SHA.fullmatch(expected):
+        raise ValueError('OCI_DELIVERY_ORIGIN_MISMATCH')
+    headers, _ = request('HEAD', '/delivery/' + expected, {200})
+    if headers.get('Docker-Content-Digest') != expected:
         raise ValueError('OCI_DELIVERY_ORIGIN_MISMATCH')
     print('官方 OCI 短期身份和 R2 容量检查通过，已用字节 ' + str(storage()['usedBytes']), flush=True)
 
@@ -179,9 +181,30 @@ def put_manifest(reference, digest, raw, media):
         raise ValueError('OCI_MANIFEST_DIGEST_MISMATCH')
 
 
+def origin_latest(origin, reference):
+    status, _, raw = origin.authenticated('/v2/' + REPOSITORY + '/manifests/' + reference)
+    if status == 404:
+        return None
+    if status != 200:
+        raise ValueError('OCI_LATEST_RETRY_REQUIRED')
+    return 'sha256:' + hashlib.sha256(raw).hexdigest()
+
+
+def restore_latest(reference, prior):
+    if prior:
+        _, raw = request('GET', manifest_ref(prior), {200})
+        if 'sha256:' + hashlib.sha256(raw).hexdigest() != prior:
+            raise ValueError('OCI_LATEST_RESTORE_DIGEST_MISMATCH')
+        put_manifest(reference, prior, raw, json.loads(raw)['mediaType'])
+    else:
+        request('DELETE', manifest_ref(reference), {202, 404})
+
+
 def activate_latest(service, digest, raw, origin):
     reference = service + '-latest'
+    prior_origin = origin_latest(origin, reference)
     previous = manifest_head(reference)
+    prior = prior_origin if previous == digest else previous
     media = json.loads(raw)['mediaType']
     try:
         put_manifest(reference, digest, raw, media)
@@ -190,24 +213,19 @@ def activate_latest(service, digest, raw, origin):
             raise ValueError('OCI_LATEST_READBACK_FAILED')
         origin.update_latest(service, digest)
     except Exception:
-        # 请求超时可能发生在写入成功后，以仓库的实际摘要为准。
-        status, _, origin_raw = origin.authenticated('/v2/' + REPOSITORY + '/manifests/' + reference)
-        if status not in (200, 404):
-            raise ValueError('OCI_LATEST_RETRY_REQUIRED') from None
-        if status == 200 and 'sha256:' + hashlib.sha256(origin_raw).hexdigest() == digest:
-            if manifest_head(reference) == digest:
-                return
-            raise ValueError('OCI_LATEST_RETRY_REQUIRED') from None
-        if manifest_head(reference) == digest and previous != digest:
-            if previous:
-                _, prior_raw = request('GET', manifest_ref(previous), {200})
-                put_manifest(reference, previous, prior_raw, json.loads(prior_raw)['mediaType'])
-            else:
-                request('DELETE', manifest_ref(reference), {202, 404})
+        # 不确定的更新先对账，失败时把官方别名恢复到此前已确认的版本。
+        try:
+            actual_origin = origin_latest(origin, reference)
+        except ValueError:
+            actual_origin = prior_origin
+        if actual_origin == digest and manifest_head(reference) == digest:
+            return
+        if manifest_head(reference) == digest and prior != digest:
+            restore_latest(reference, prior)
         raise
 
 
-def collect(protected, force_gc=False):
+def collect(protected, refresh, force_gc=False):
     usage = storage()
     expiry = int(time.time() * 1000) - 48 * 3600 * 1000
     groups = {}
@@ -220,19 +238,30 @@ def collect(protected, force_gc=False):
         available[tag] = manifest_head(tag)
     if any(digest is None for digest in available.values()):
         raise ValueError('OCI_RETENTION_CATALOG_INVALID')
+    protected.update(refresh())
     missing_tags = protected - set(available.values())
-    if missing_tags:
-        if any(manifest_head(digest) != digest for digest in missing_tags):
-            raise ValueError('OCI_RETENTION_PROTECTION_UNVERIFIED')
-        print('存在已核验但暂无固定标签的保护摘要，暂缓仓库回收。', flush=True)
-        return
-    removed = False
+    if any(manifest_head(digest) != digest for digest in missing_tags):
+        raise ValueError('OCI_RETENTION_PROTECTION_UNVERIFIED')
+    removed = {}
     for versions in groups.values():
         for _, tag, uploaded in sorted(versions, reverse=True)[2:]:
             if uploaded <= expiry and available[tag] not in protected:
                 request('DELETE', manifest_ref(tag), {202, 404})
-                removed = True
+                removed[tag] = available[tag]
     if not removed and not force_gc:
+        return
+    # 标签移除仍保留原摘要。GC 前重读部署分支，恢复刚进入保护集的标签。
+    protected.update(refresh())
+    for tag, digest in removed.items():
+        if digest in protected:
+            _, raw = request('GET', manifest_ref(digest), {200})
+            if 'sha256:' + hashlib.sha256(raw).hexdigest() != digest:
+                raise ValueError('OCI_RETENTION_PROTECTION_UNVERIFIED')
+            put_manifest(tag, digest, raw, json.loads(raw)['mediaType'])
+        else:
+            available.pop(tag)
+    if not protected <= set(available.values()):
+        print('存在暂无固定标签的保护摘要，保留清单及层。', flush=True)
         return
     _, raw = request('POST', V2 + '/gc?mode=untagged', {200}, data=b'')
     if json.loads(raw).get('success') is not True:
