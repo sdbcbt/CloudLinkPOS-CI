@@ -196,7 +196,7 @@ jobs:
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
         run: python3 automation/ci/report-admin-failure.py
   publish-receipts:
-    if: always() && inputs.publish_receipts && needs.plan.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    if: always() && needs.plan.result == 'success' && (needs.build.result == 'success' || (inputs.publish_receipts && needs.build.result == 'skipped'))
     needs: [plan, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -208,6 +208,8 @@ jobs:
     permissions:
       contents: write
       actions: read
+      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -216,6 +218,7 @@ jobs:
       - name: 说明整批重跑要求
         run: echo '版本收据只接受同一 attempt 的完整批次。失败后请选择 Re-run all jobs；只重跑失败任务不会形成完整计划，将安全拒绝发布。'
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        if: inputs.publish_receipts
         with:
           name: source-build-plan-${{ github.run_attempt }}
           path: input
@@ -225,7 +228,15 @@ jobs:
           pattern: receipt-*-attempt-${{ github.run_attempt }}
           path: input
           merge-multiple: true
+      - name: 整批构建通过后并行更新 GHCR latest
+        if: needs.build.result == 'success'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          EXPECTED_MATRIX: ${{ needs.plan.outputs.matrix }}
+        run: python3 automation/ci/ghcr-delivery.py --finalize
       - name: 保存公开构建收据供发布服务读取
+        if: inputs.publish_receipts
         env:
           RECEIPT_TOKEN: ${{ github.token }}
         run: python3 automation/ci/publish-receipts.py

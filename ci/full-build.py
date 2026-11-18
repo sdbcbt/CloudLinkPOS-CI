@@ -344,9 +344,7 @@ def build(service):
             raw = client.verify_image(version, digest)
             origin_evidence = client.prove_private(digest)
             STAGE = '通过生产域名回读原始镜像'
-            evidence = delivery.verify(digest, raw)
-            STAGE = '更新并核验 GHCR latest'
-            client.update_latest(service, digest)
+            evidence = delivery.verify(version, digest, raw)
         finally:
             run(['docker', 'logout', REGISTRY], env=env)
         receipt = {'schema': 'cloudlinkpos.public-full-build/v1', 'sourceRepository': 'sdbcbt/CloudLinkPOS', 'sourceSHA': os.environ['SOURCE_SHA'], 'buildRepository': os.environ['GITHUB_REPOSITORY'], 'workflowSHA': os.environ['GITHUB_SHA'], 'runID': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'service': service, 'repository': IMAGE, 'tag': version, 'digest': digest, 'privateEvidence': evidence, 'origin': {'repository': ORIGIN_IMAGE, 'digest': digest, 'privateEvidence': origin_evidence}, 'tagPolicy': 'version-and-latest-v1', 'metadataSHA256': hashlib.sha256((output / 'release.json').read_bytes()).hexdigest()}
