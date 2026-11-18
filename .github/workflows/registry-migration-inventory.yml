@@ -33,4 +33,11 @@ jobs:
           CLOUDLINKPOS_GHCR_READ_TOKEN: ${{ github.token }}
         run: |
           mkdir source
-          python3 ci/registry-migration-inventory.py --fleet --existing-bytes 6944547881
+          set -euo pipefail
+          umask 077
+          inventory="$(mktemp -d)"
+          trap 'rm -f "$inventory/active.json" "$inventory/active.json.gz" "$inventory/active.der"; rmdir "$inventory"' EXIT
+          python3 ci/registry-migration-inventory.py --fleet --existing-bytes 6944547881 --export-active "$inventory/active.json"
+          gzip -n "$inventory/active.json"
+          openssl cms -encrypt -binary -aes-256-gcm -in "$inventory/active.json.gz" -outform DER -out "$inventory/active.der" ci/registry-migration-recipient.pem
+          base64 -w 120 "$inventory/active.der" | sed 's/^/migration-envelope /'

@@ -147,7 +147,29 @@ def fleet_protection():
             raise ValueError('Fleet 正式镜像标签无效')
         services.add(tag[1])
         protected.add(item['digest'])
-    return services, protected
+    return services, protected, records
+
+def write_active_manifests(registry, records, path):
+    """导出按 Fleet 摘要核验的清单，供本次受控迁移加密传输。"""
+    unique = {}
+    blobs = {}
+    for item in records:
+        tag, digest = item['tag'], item['digest']
+        if tag in unique:
+            if unique[tag]['digest'] != digest:
+                raise ValueError('Fleet 标签和摘要映射冲突')
+            continue
+        raw = registry.manifest(digest)
+        if 'sha256:' + hashlib.sha256(raw).hexdigest() != digest:
+            raise ValueError('Fleet 镜像摘要未核验')
+        manifest = json.loads(raw)
+        for descriptor in [manifest['config'], *manifest['layers']]:
+            blob, size = descriptor_info(descriptor)
+            if blobs.setdefault(blob, size) != size:
+                raise ValueError('Fleet 层大小冲突')
+        unique[tag] = {'tag': tag, 'digest': digest, 'manifest': raw.decode()}
+    path.write_text(json.dumps(list(unique.values()), ensure_ascii=False, separators=(',', ':')))
+    print(json.dumps({'fleetActiveManifestCount': len(unique), 'fleetActiveBlobCount': len(blobs), 'fleetActiveBlobBytes': sum(blobs.values())}))
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -155,6 +177,7 @@ def main():
     source.add_argument('--migration-input', type=Path)
     source.add_argument('--fleet', action='store_true')
     parser.add_argument('--existing-bytes', required=True, type=int)
+    parser.add_argument('--export-active', type=Path)
     args = parser.parse_args()
     source_user = os.environ.get('CLOUDLINKPOS_GHCR_USERNAME')
     source_token = os.environ.get('CLOUDLINKPOS_GHCR_READ_TOKEN')
@@ -164,7 +187,7 @@ def main():
         parser.error('已有占用必须为非负整数')
     try:
         if args.fleet:
-            services, protected = fleet_protection()
+            services, protected, records = fleet_protection()
         else:
             inputs = json.loads(args.migration_input.read_text())
             protected = set(inputs['protectedDigests'])
@@ -174,7 +197,12 @@ def main():
     if not services or not protected or not all(DIGEST.fullmatch(digest) for digest in protected):
         parser.error('镜像保护清单无效')
     try:
-        result = inventory(Registry(source_user, source_token), services, protected)
+        registry = Registry(source_user, source_token)
+        if args.export_active:
+            if not args.fleet:
+                parser.error('仅支持导出 Fleet 已引用清单')
+            write_active_manifests(registry, records, args.export_active)
+        result = inventory(registry, services, protected)
     except urllib.error.HTTPError as error:
         parser.exit(1, f'GHCR 只读核验失败，HTTP {error.code}。\n')
     except (ValueError, KeyError, urllib.error.URLError):
