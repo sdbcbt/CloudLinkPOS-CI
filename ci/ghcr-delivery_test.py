@@ -50,10 +50,11 @@ class DeliveryVerification(unittest.TestCase):
             DELIVERY.verify(version, DIGEST, MANIFEST)
 
 
+    @patch.object(DELIVERY.time, 'sleep')
     @patch.object(DELIVERY.SOURCE.GHCR, 'Registry')
     @patch.object(DELIVERY, 'verify_manifest')
     @patch.object(DELIVERY, 'latest_manifest')
-    def test_ambiguous_alias_write_is_reconciled_or_restored(self, latest, verify, registry):
+    def test_ambiguous_alias_write_is_reconciled_or_restored(self, latest, verify, registry, _sleep):
         prior = 'sha256:' + '9' * 64
         entry = ('admin', DIGEST, MANIFEST, prior)
         latest.return_value = (DIGEST, MANIFEST)
@@ -61,7 +62,9 @@ class DeliveryVerification(unittest.TestCase):
         self.assertEqual(DELIVERY.promote(entry, 'oidc'), 'admin')
         registry.return_value.update_latest.reset_mock(side_effect=True)
         latest.side_effect = [(DIGEST, MANIFEST), (prior, b'previous')]
-        verify.side_effect = [ValueError('OCI_DELIVERY_READBACK_FAILED'), None]
+        registry.return_value.update_latest.side_effect = [MANIFEST, TimeoutError]
+        failed = ValueError('OCI_DELIVERY_READBACK_FAILED')
+        verify.side_effect = [failed, failed, None]
         with self.assertRaisesRegex(ValueError, 'OCI_DELIVERY_READBACK_FAILED'):
             DELIVERY.promote(entry, 'oidc')
         self.assertEqual(registry.return_value.update_latest.call_args_list, [

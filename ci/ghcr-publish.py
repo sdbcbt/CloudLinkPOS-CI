@@ -96,5 +96,5 @@ class Registry:
         status, _, _ = self.authenticated('/v2/' + self.repository + '/manifests/' + service + '-latest', raw, 'PUT', {'Content-Type': media})
         if status not in (200, 201, 202):
             raise ValueError('GHCR_LATEST_WRITE_FAILED')
-        self.verify_image(service + '-latest', digest)
+        return self.verify_image(service + '-latest', digest)
 

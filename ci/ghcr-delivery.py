@@ -138,48 +138,63 @@ def prepare_promotion(entry, token):
 
 
 def confirm_latest(client, reference, digest):
-    for attempt in range(4):
+    for attempt in range(6):
         try:
             actual, raw = latest_manifest(client, reference)
             if actual == digest:
                 return raw
         except (ValueError, urllib.error.URLError, TimeoutError, ConnectionError):
             pass
-        if attempt < 3:
+        if attempt < 5:
             time.sleep(2 ** attempt)
     raise ValueError('GHCR_LATEST_STATE_UNCONFIRMED')
 
 
 def write_latest(client, service, digest):
     try:
-        client.update_latest(service, digest)
+        return client.update_latest(service, digest)
     except (ValueError, urllib.error.URLError, TimeoutError, ConnectionError):
         # 超时或临时读回失败时，PUT 仍可能在源站完成。
         return confirm_latest(client, service + '-latest', digest)
-    return None
+
+
+def verify_latest(reference, digest, raw, token):
+    try:
+        verify_manifest(reference, digest, raw, token)
+    except (ValueError, urllib.error.URLError, TimeoutError, ConnectionError):
+        # 短暂的跨入口可见性延迟可以收敛，先复核再考虑恢复。
+        time.sleep(1)
+        verify_manifest(reference, digest, raw, token)
 
 
 def promote(entry, token):
     service, digest, raw, previous = entry
     reference = service + '-latest'
     client = SOURCE.GHCR.Registry()
-    if previous != digest:
-        write_latest(client, service, digest)
     try:
-        verify_manifest(reference, digest, raw, token)
-    except Exception:
-        if previous and previous != digest:
+        if previous != digest:
+            write_latest(client, service, digest)
+        verify_latest(reference, digest, raw, token)
+    except (ValueError, urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        if not previous or previous == digest:
+            raise
+        try:
+            current_raw = confirm_latest(client, reference, digest)
+        except ValueError:
+            raise ValueError('GHCR_LATEST_STATE_UNCONFIRMED') from None
+        if str(error) == 'GHCR_LATEST_STATE_UNCONFIRMED':
             try:
-                # 只补偿当前批次的写入，确认源站和正式代理都回到原摘要。
-                confirm_latest(client, reference, digest)
-                write_latest(client, service, previous)
-                previous_raw = confirm_latest(client, reference, previous)
-                verify_manifest(reference, previous, previous_raw, token)
-            except Exception:
-                raise ValueError('GHCR_LATEST_RESTORE_UNCONFIRMED') from None
+                verify_latest(reference, digest, current_raw, token)
+                return service
+            except (ValueError, urllib.error.URLError, TimeoutError, ConnectionError):
+                pass
+        try:
+            previous_raw = write_latest(client, service, previous)
+            verify_latest(reference, previous, previous_raw, token)
+        except (ValueError, urllib.error.URLError, TimeoutError, ConnectionError):
+            raise ValueError('GHCR_LATEST_RESTORE_UNCONFIRMED') from None
         raise
     return service
-
 
 def finalize():
     receipts = verify_batch(Path('input'), os.environ)
