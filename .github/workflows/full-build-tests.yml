@@ -1,10 +1,10 @@
 name: 全量构建与镜像推送测试
 on:
   pull_request:
-    paths: ['ci/full-build*', 'ci/pull-ci-base-image*', 'ci/registry-pilot*', 'ci/ghcr-publish*', 'ci/registry-mirror*', 'ci/publish-receipts*', '.github/workflows/registry-pilot.yml', 'ci/registry-upload*', 'ci/report-admin-failure*', 'ci/report-pos-failure.py', '.github/workflows/private-main.yml', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
+    paths: ['ci/full-build*', 'ci/pull-ci-base-image*', 'ci/registry-pilot*', 'ci/ghcr-publish*', 'ci/registry-mirror*', 'ci/publish-receipts*', '.github/workflows/registry-pilot.yml', 'ci/registry-upload*', 'ci/official-registry*', 'ci/publish-official-images*', 'ci/report-admin-failure*', 'ci/report-pos-failure.py', '.github/workflows/private-main.yml', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
   push:
     branches: [main]
-    paths: ['ci/full-build*', 'ci/pull-ci-base-image*', 'ci/registry-pilot*', 'ci/ghcr-publish*', 'ci/registry-mirror*', 'ci/publish-receipts*', '.github/workflows/registry-pilot.yml', 'ci/registry-upload*', 'ci/report-admin-failure*', 'ci/report-pos-failure.py', '.github/workflows/private-main.yml', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
+    paths: ['ci/full-build*', 'ci/pull-ci-base-image*', 'ci/registry-pilot*', 'ci/ghcr-publish*', 'ci/registry-mirror*', 'ci/publish-receipts*', '.github/workflows/registry-pilot.yml', 'ci/registry-upload*', 'ci/official-registry*', 'ci/publish-official-images*', 'ci/report-admin-failure*', 'ci/report-pos-failure.py', '.github/workflows/private-main.yml', '.github/workflows/full-version-build.yml', '.github/workflows/full-build-tests.yml']
 permissions:
   contents: read
 jobs:
