@@ -50,6 +50,23 @@ class DeliveryVerification(unittest.TestCase):
             DELIVERY.verify(version, DIGEST, MANIFEST)
 
 
+    @patch.object(DELIVERY.SOURCE.GHCR, 'Registry')
+    @patch.object(DELIVERY, 'verify_manifest')
+    @patch.object(DELIVERY, 'latest_manifest')
+    def test_ambiguous_alias_write_is_reconciled_or_restored(self, latest, verify, registry):
+        prior = 'sha256:' + '9' * 64
+        entry = ('admin', DIGEST, MANIFEST, prior)
+        latest.return_value = (DIGEST, MANIFEST)
+        registry.return_value.update_latest.side_effect = TimeoutError
+        self.assertEqual(DELIVERY.promote(entry, 'oidc'), 'admin')
+        registry.return_value.update_latest.reset_mock(side_effect=True)
+        verify.side_effect = ValueError('OCI_DELIVERY_READBACK_FAILED')
+        with self.assertRaisesRegex(ValueError, 'OCI_DELIVERY_READBACK_FAILED'):
+            DELIVERY.promote(entry, 'oidc')
+        self.assertEqual(registry.return_value.update_latest.call_args_list, [
+            call('admin', DIGEST), call('admin', prior),
+        ])
+
     def test_batch_requires_all_current_attempt_receipts_before_promotion(self):
         env = {'SOURCE_SHA': 's', 'GITHUB_SHA': 'w', 'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '2',
                'EXPECTED_MATRIX': json.dumps({'include': [{'service': 'admin'}, {'service': 'file-api'}]})}

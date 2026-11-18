@@ -28,7 +28,7 @@ DEPLOY_MANIFEST = ROOT.parent / 'fleet-deploy-manifest.yaml'
 # 推送前的网络步骤（读源码、读私库标签、拉基础镜像、编译）遇到偶发网络故障时重试。
 RETRY_ATTEMPTS = 2  # 总共最多 2 次：失败后只再试 1 次
 RETRY_WAIT_SECONDS = 30
-# GHCR 原始镜像只在私有包发布，CF/R2 完整核验后才写正式收据。
+# GHCR 原始镜像发布到私有包，经 Cloudflare 回源核验后生成正式收据。
 SLEEP = time.sleep
 
 

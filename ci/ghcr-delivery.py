@@ -34,7 +34,7 @@ def request(path, *, method='GET', token=None):
             with opener.open(req, timeout=35) as response:
                 raw = response.read(65537) if method == 'GET' else b''
                 if len(raw) > 65536:
-                    raise ValueError('OCI_DELIVERY_MANIFEST_TOO_LARGE')
+                    raise ValueError('OCI_DELIVERY_BODY_TOO_LARGE')
                 return response.status, response.headers, raw
         except urllib.error.HTTPError as error:
             if error.code not in (429, 502, 503, 504) or attempt == 2:
@@ -102,18 +102,69 @@ def verify_batch(folder, env):
     return receipts.values()
 
 
-def promote(entry):
+def latest_manifest(client, reference):
+    status, _, raw = client.authenticated(BASE + '/manifests/' + reference)
+    if status == 404:
+        return None, None
+    if status != 200:
+        raise ValueError('GHCR_LATEST_STATE_UNKNOWN')
+    return 'sha256:' + hashlib.sha256(raw).hexdigest(), raw
+
+
+def service_version(service, reference):
+    match = re.fullmatch(re.escape(service) + r'-v([0-9]+)\.([0-9]+)\.([0-9]+)', reference)
+    if not match:
+        raise ValueError('GHCR_LATEST_VERSION_UNKNOWN')
+    return tuple(map(int, match.groups()))
+
+
+def prepare_promotion(entry, token):
     service, version, digest = entry
     client = SOURCE.GHCR.Registry()
     raw = client.verify_image(version, digest)
-    client.update_latest(service, digest)
-    verify_manifest(service + '-latest', digest, raw, SOURCE.pull_token())
+    reference = service + '-latest'
+    previous, previous_raw = latest_manifest(client, reference)
+    if previous and previous != digest:
+        config = json.loads(previous_raw)['config']['digest']
+        if not DIGEST.fullmatch(config):
+            raise ValueError('GHCR_LATEST_CONFIG_INVALID')
+        status, _, body = request('/blobs/' + config, token=token)
+        if status != 200 or 'sha256:' + hashlib.sha256(body).hexdigest() != config:
+            raise ValueError('GHCR_LATEST_CONFIG_UNVERIFIED')
+        previous_version = json.loads(body)['config']['Labels']['io.cloudlinkpos.release-tag']
+        if service_version(service, previous_version) >= service_version(service, version):
+            raise ValueError('GHCR_LATEST_VERSION_CONFLICT')
+    return service, digest, raw, previous
+
+
+def promote(entry, token):
+    service, digest, raw, previous = entry
+    reference = service + '-latest'
+    client = SOURCE.GHCR.Registry()
+    try:
+        if previous != digest:
+            client.update_latest(service, digest)
+        verify_manifest(reference, digest, raw, token)
+    except Exception:
+        # PUT 超时可能已生效。先核对源站和代理，再确认或恢复别名。
+        actual, _ = latest_manifest(client, reference)
+        if actual != digest:
+            raise
+        try:
+            verify_manifest(reference, digest, raw, token)
+        except Exception:
+            if previous and previous != digest:
+                client.update_latest(service, previous)
+            raise
+    return service
 
 
 def finalize():
     receipts = verify_batch(Path('input'), os.environ)
+    token = SOURCE.pull_token()
     with ThreadPoolExecutor(max_workers=10) as executor:
-        list(executor.map(promote, receipts))
+        promotions = list(executor.map(lambda entry: prepare_promotion(entry, token), receipts))
+        list(executor.map(lambda entry: promote(entry, token), promotions))
     print('整批 GHCR latest 已更新并经生产入口核验', flush=True)
 
 
