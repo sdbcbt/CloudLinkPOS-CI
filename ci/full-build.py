@@ -28,7 +28,7 @@ DEPLOY_MANIFEST = ROOT.parent / 'fleet-deploy-manifest.yaml'
 # 推送前的网络步骤（读源码、读私库标签、拉基础镜像、编译）遇到偶发网络故障时重试。
 RETRY_ATTEMPTS = 2  # 总共最多 2 次：失败后只再试 1 次
 RETRY_WAIT_SECONDS = 30
-# GHCR 原始镜像只在私有包发布，CF/R2 完整核验后才写正式收据。
+# GHCR 原始镜像发布到私有包，经 Cloudflare 回源核验后生成正式收据。
 SLEEP = time.sleep
 
 
@@ -283,6 +283,7 @@ def stamp_admin_version(output, version):
 def build(service):
     global STAGE
     publisher = module('ghcr_publish', Path(__file__).with_name('ghcr-publish.py'))
+    delivery = module('ghcr_delivery', Path(__file__).with_name('ghcr-delivery.py'))
     client = publisher.Registry()
     STAGE = '验证私有仓库与正式版本'
     print(STAGE, flush=True)
@@ -340,12 +341,14 @@ def build(service):
             STAGE = '发布并回读固定版本'
             print(STAGE, flush=True)
             digest = push_image(client, version, folder, env)
-            client.verify_image(version, digest)
+            raw = client.verify_image(version, digest)
             origin_evidence = client.prove_private(digest)
+            STAGE = '通过生产域名回读原始镜像'
+            evidence = delivery.verify(version, digest, raw)
         finally:
             run(['docker', 'logout', REGISTRY], env=env)
-        receipt = {'schema': 'cloudlinkpos.public-full-build/v1', 'sourceRepository': 'sdbcbt/CloudLinkPOS', 'sourceSHA': os.environ['SOURCE_SHA'], 'buildRepository': os.environ['GITHUB_REPOSITORY'], 'workflowSHA': os.environ['GITHUB_SHA'], 'runID': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'service': service, 'repository': IMAGE, 'tag': version, 'digest': digest, 'origin': {'repository': ORIGIN_IMAGE, 'digest': digest, 'privateEvidence': origin_evidence}, 'tagPolicy': 'version-and-latest-v1', 'metadataSHA256': hashlib.sha256((output / 'release.json').read_bytes()).hexdigest()}
-        dest = Path('candidates')
+        receipt = {'schema': 'cloudlinkpos.public-full-build/v1', 'sourceRepository': 'sdbcbt/CloudLinkPOS', 'sourceSHA': os.environ['SOURCE_SHA'], 'buildRepository': os.environ['GITHUB_REPOSITORY'], 'workflowSHA': os.environ['GITHUB_SHA'], 'runID': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'service': service, 'repository': IMAGE, 'tag': version, 'digest': digest, 'privateEvidence': evidence, 'origin': {'repository': ORIGIN_IMAGE, 'digest': digest, 'privateEvidence': origin_evidence}, 'tagPolicy': 'version-and-latest-v1', 'metadataSHA256': hashlib.sha256((output / 'release.json').read_bytes()).hexdigest()}
+        dest = Path('receipts')
         dest.mkdir(exist_ok=True)
         (dest / (service + '.json')).write_text(json.dumps(receipt, indent=2) + '\n')
         print(service + ' ' + version + ' ' + digest)
