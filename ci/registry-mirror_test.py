@@ -73,7 +73,7 @@ class Mirror(unittest.TestCase):
         plan = workflow['jobs']['plan']
         self.assertEqual(plan['permissions'], {'contents': 'read', 'id-token': 'write'})
         runs = [step.get('run', '') for step in plan['steps']]
-        preflight = runs.index('python3 automation/ci/registry-mirror.py --preflight')
+        preflight = runs.index('python3 automation/ci/official-registry.py')
         self.assertLess(preflight, runs.index('python3 automation/ci/full-build.py checkout'))
         self.assertEqual(workflow['jobs']['build']['needs'], 'plan')
         with patch.object(MIRROR, 'cf', return_value={'budgetBytes': 9000000000, 'usedBytes': 10, 'reservedBytes': 20}) as cf:
@@ -142,17 +142,14 @@ class Mirror(unittest.TestCase):
         with patch.object(MIRROR, 'cf', side_effect=ValueError('CF_HTTP_503')), self.assertRaisesRegex(ValueError, 'CF_HTTP_503'):
             MIRROR.finalize(tag, digest)
 
-    def test_finalize_is_after_both_registry_checks_and_before_receipt(self):
-        source = Path(__file__).with_name('full-build.py').read_text()
-        mirror = source.index('evidence = mirror.mirror(')
-        latest = source.index('client.update_latest(service, digest)', mirror)
-        finalize = source.index('mirror.finalize(version, digest)', latest)
-        receipt = source.index("receipt = {'schema'", finalize)
-        self.assertLess(mirror, latest)
-        self.assertLess(latest, finalize)
-        self.assertLess(finalize, receipt)
-        calls, _ = self.execute()
-        self.assertNotIn('/finalize', [call[0] for call in calls])
+    def test_official_publish_and_gc_precede_receipt(self):
+        source = Path(__file__).with_name('publish-official-images.py').read_text()
+        origin = source.index('raw = origin.verify_image(')
+        publish = source.index("item['privateEvidence'] = registry.publish(")
+        latest = source.index('registry.activate_latest(')
+        collect = source.rindex('registry.collect(protected, fleet_digests)')
+        receipt = source.index("work = Path('receipts')")
+        self.assertEqual(sorted([origin, publish, collect, latest, receipt]), [origin, publish, collect, latest, receipt])
 
     def test_only_explicit_prepare_busy_response_is_retried(self):
         cases = [(429, {'x-registry-publication-busy': '1', 'Retry-After': '5'}, MIRROR.PublicationBusy), (429, {}, ValueError), (507, {'x-registry-publication-busy': '1'}, ValueError), (401, {}, ValueError)]
