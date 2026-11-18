@@ -51,15 +51,26 @@ def main():
     build = local_module('full-build')
     origin = registry.SOURCE.PILOT.Registry()
     candidates = read_candidates(Path('candidates'), os.environ)
+    protected = {item['digest'] for item in build.fresh_fleet_records() if item['repository'] == build.IMAGE}
+    registry.collect(protected)
     for service, item in sorted(candidates.items()):
         tag, digest = item['tag'], item['digest']
         raw = origin.verify_image(tag, digest)
-        item['privateEvidence'] = registry.publish(tag, digest, raw)
-        origin.update_latest(service, digest)
+        try:
+            item['privateEvidence'] = registry.publish(tag, digest, raw)
+        except ValueError as error:
+            if str(error) != 'OCI_CAPACITY_EXCEEDED':
+                raise
+            registry.collect(protected, force_gc=True)
+            item['privateEvidence'] = registry.publish(tag, digest, raw)
+        protected.add(digest)
         print('官方 OCI 同步完成 ' + service + ' ' + tag, flush=True)
-    protected = {item['digest'] for item in candidates.values()}
     protected.update(item['digest'] for item in build.fresh_fleet_records() if item['repository'] == build.IMAGE)
     registry.collect(protected)
+    for service, item in sorted(candidates.items()):
+        tag, digest = item['tag'], item['digest']
+        raw = origin.verify_image(tag, digest)
+        registry.activate_latest(service, digest, raw, origin)
     work = Path('receipts')
     work.mkdir(exist_ok=True)
     for service, item in sorted(candidates.items()):

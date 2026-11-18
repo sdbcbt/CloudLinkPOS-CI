@@ -157,11 +157,8 @@ def publish(tag, digest, raw):
     with tempfile.TemporaryDirectory() as directory:
         for item in missing:
             upload(item, Path(directory))
-    for reference in (tag, svc + '-latest'):
-        headers, _ = request('PUT', manifest_ref(reference), {201}, data=raw, headers={'Content-Type': media})
-        if headers.get('Docker-Content-Digest') != digest:
-            raise ValueError('OCI_MANIFEST_DIGEST_MISMATCH')
-    for ref in (tag, digest, svc + '-latest'):
+    put_manifest(tag, digest, raw, media)
+    for ref in (tag, digest):
         headers, received = request('GET', manifest_ref(ref), {200})
         if headers.get('Docker-Content-Digest') != digest or received != raw:
             raise ValueError('OCI_MANIFEST_READBACK_FAILED')
@@ -176,7 +173,41 @@ def publish(tag, digest, raw):
     return {'authenticated_read': True, 'anonymous_pull_denied': True, 'image_digest': digest}
 
 
-def collect(protected):
+def put_manifest(reference, digest, raw, media):
+    headers, _ = request('PUT', manifest_ref(reference), {201}, data=raw, headers={'Content-Type': media})
+    if headers.get('Docker-Content-Digest') != digest:
+        raise ValueError('OCI_MANIFEST_DIGEST_MISMATCH')
+
+
+def activate_latest(service, digest, raw, origin):
+    reference = service + '-latest'
+    previous = manifest_head(reference)
+    media = json.loads(raw)['mediaType']
+    try:
+        put_manifest(reference, digest, raw, media)
+        headers, _ = request('HEAD', '/delivery/' + reference, {200})
+        if headers.get('Docker-Content-Digest') != digest:
+            raise ValueError('OCI_LATEST_READBACK_FAILED')
+        origin.update_latest(service, digest)
+    except Exception:
+        # 请求超时可能发生在写入成功后，以仓库的实际摘要为准。
+        status, _, origin_raw = origin.authenticated('/v2/' + REPOSITORY + '/manifests/' + reference)
+        if status not in (200, 404):
+            raise ValueError('OCI_LATEST_RETRY_REQUIRED') from None
+        if status == 200 and 'sha256:' + hashlib.sha256(origin_raw).hexdigest() == digest:
+            if manifest_head(reference) == digest:
+                return
+            raise ValueError('OCI_LATEST_RETRY_REQUIRED') from None
+        if manifest_head(reference) == digest and previous != digest:
+            if previous:
+                _, prior_raw = request('GET', manifest_ref(previous), {200})
+                put_manifest(reference, previous, prior_raw, json.loads(prior_raw)['mediaType'])
+            else:
+                request('DELETE', manifest_ref(reference), {202, 404})
+        raise
+
+
+def collect(protected, force_gc=False):
     usage = storage()
     expiry = int(time.time() * 1000) - 48 * 3600 * 1000
     groups = {}
@@ -187,12 +218,22 @@ def collect(protected):
             raise ValueError('OCI_RETENTION_CATALOG_INVALID')
         groups.setdefault(match[1], []).append((tuple(map(int, match.groups()[1:])), tag, uploaded))
         available[tag] = manifest_head(tag)
-    if any(digest is None for digest in available.values()) or not protected <= set(available.values()):
-        raise ValueError('OCI_RETENTION_PROTECTION_UNVERIFIED')
+    if any(digest is None for digest in available.values()):
+        raise ValueError('OCI_RETENTION_CATALOG_INVALID')
+    missing_tags = protected - set(available.values())
+    if missing_tags:
+        if any(manifest_head(digest) != digest for digest in missing_tags):
+            raise ValueError('OCI_RETENTION_PROTECTION_UNVERIFIED')
+        print('存在已核验但暂无固定标签的保护摘要，暂缓仓库回收。', flush=True)
+        return
+    removed = False
     for versions in groups.values():
         for _, tag, uploaded in sorted(versions, reverse=True)[2:]:
             if uploaded <= expiry and available[tag] not in protected:
                 request('DELETE', manifest_ref(tag), {202, 404})
+                removed = True
+    if not removed and not force_gc:
+        return
     _, raw = request('POST', V2 + '/gc?mode=untagged', {200}, data=b'')
     if json.loads(raw).get('success') is not True:
         raise ValueError('OCI_RETENTION_GC_FAILED')

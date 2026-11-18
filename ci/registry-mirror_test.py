@@ -146,10 +146,10 @@ class Mirror(unittest.TestCase):
         source = Path(__file__).with_name('publish-official-images.py').read_text()
         origin = source.index('raw = origin.verify_image(')
         publish = source.index("item['privateEvidence'] = registry.publish(")
-        latest = source.index('origin.update_latest(')
-        collect = source.index('registry.collect(protected)')
+        latest = source.index('registry.activate_latest(')
+        collect = source.rindex('registry.collect(protected)')
         receipt = source.index("work = Path('receipts')")
-        self.assertEqual(sorted([origin, publish, latest, collect, receipt]), [origin, publish, latest, collect, receipt])
+        self.assertEqual(sorted([origin, publish, collect, latest, receipt]), [origin, publish, collect, latest, receipt])
 
     def test_only_explicit_prepare_busy_response_is_retried(self):
         cases = [(429, {'x-registry-publication-busy': '1', 'Retry-After': '5'}, MIRROR.PublicationBusy), (429, {}, ValueError), (507, {'x-registry-publication-busy': '1'}, ValueError), (401, {}, ValueError)]
