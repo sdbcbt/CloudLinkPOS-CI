@@ -1,5 +1,55 @@
 [
   {
+    "sourceSHA": "d6bad77224e7d00ae51f7c101c7b67c4c67be85d",
+    "beforeSHA": "3f9737815fabab6a21e7426590aaadf5b2d2425f",
+    "expectedServices": [
+      "inventory-api"
+    ],
+    "publicationPolicy": {
+      "grayRequired": false,
+      "generation": 11
+    },
+    "schema": "cloudlinkpos.public-source-build/v1",
+    "sourceRepository": "sdbcbt/CloudLinkPOS",
+    "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+    "runID": "44712791621",
+    "attempt": "1",
+    "workflowSHA": "b81264ce2bbae11c45494697bc45cf44759952e7",
+    "workflowPath": ".github/workflows/private-main.yml",
+    "path": "builds/d6bad77224e7d00ae51f7c101c7b67c4c67be85d/44712791621-1.json",
+    "receipts": [
+      {
+        "schema": "cloudlinkpos.public-full-build/v1",
+        "sourceRepository": "sdbcbt/CloudLinkPOS",
+        "sourceSHA": "d6bad77224e7d00ae51f7c101c7b67c4c67be85d",
+        "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+        "workflowSHA": "b81264ce2bbae11c45494697bc45cf44759952e7",
+        "runID": "44712791621",
+        "attempt": "1",
+        "service": "inventory-api",
+        "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
+        "tag": "inventory-api-v0.3.77",
+        "digest": "sha256:41be83c77018a389c96f78415e2bd5903afc39641d9959456c268bee90bd317e",
+        "tagPolicy": "version-and-latest-v1",
+        "metadataSHA256": "f198312866346ccfe0e163e9a01f52ec3696d71599202d7ba47cbfc51ac15600",
+        "origin": {
+          "repository": "ghcr.io/sdbcbt/cloudlinkpos",
+          "digest": "sha256:41be83c77018a389c96f78415e2bd5903afc39641d9959456c268bee90bd317e",
+          "privateEvidence": {
+            "authenticated_read": true,
+            "anonymous_pull_denied": true,
+            "image_digest": "sha256:41be83c77018a389c96f78415e2bd5903afc39641d9959456c268bee90bd317e"
+          }
+        },
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:41be83c77018a389c96f78415e2bd5903afc39641d9959456c268bee90bd317e"
+        }
+      }
+    ]
+  },
+  {
     "sourceSHA": "56d60cba2493d0f4414d1ee1d2256f43028fc118",
     "beforeSHA": "3d0038b03b41b45c304f10957969254be7520a7d",
     "expectedServices": [
@@ -1326,58 +1376,6 @@
           "authenticated_read": true,
           "anonymous_pull_denied": true,
           "image_digest": "sha256:f9916e2abf65a868b09ebc51adb0c960132d75fd0725291408689c68d19ef879"
-        }
-      }
-    ]
-  },
-  {
-    "sourceSHA": "ed215840091533f7883ccd72d062b6e691430058",
-    "beforeSHA": "831e40612b0a7bdc9215a1a55c168f63e9bf89af",
-    "expectedServices": [
-      "admin",
-      "inventory-api",
-      "inventory-rpc"
-    ],
-    "publicationPolicy": {
-      "grayRequired": false,
-      "generation": 11
-    },
-    "schema": "cloudlinkpos.public-source-build/v1",
-    "sourceRepository": "sdbcbt/CloudLinkPOS",
-    "buildRepository": "sdbcbt/CloudLinkPOS-CI",
-    "runID": "44706526947",
-    "attempt": "1",
-    "workflowSHA": "b81264ce2bbae11c45494697bc45cf44759952e7",
-    "workflowPath": ".github/workflows/private-main.yml",
-    "path": "builds/ed215840091533f7883ccd72d062b6e691430058/44706526947-1.json",
-    "receipts": [
-      {
-        "schema": "cloudlinkpos.public-full-build/v1",
-        "sourceRepository": "sdbcbt/CloudLinkPOS",
-        "sourceSHA": "ed215840091533f7883ccd72d062b6e691430058",
-        "buildRepository": "sdbcbt/CloudLinkPOS-CI",
-        "workflowSHA": "b81264ce2bbae11c45494697bc45cf44759952e7",
-        "runID": "44706526947",
-        "attempt": "1",
-        "service": "inventory-api",
-        "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
-        "tag": "inventory-api-v0.3.75",
-        "digest": "sha256:7b1586ad85c1338a5324a35400d257dcb50d61f0b4344204babf27c2020ae053",
-        "tagPolicy": "version-and-latest-v1",
-        "metadataSHA256": "23d4acef28b2c04ccba3bc35f83ba4d13fbd656d42e2e0c92ce6fe45dda21581",
-        "origin": {
-          "repository": "ghcr.io/sdbcbt/cloudlinkpos",
-          "digest": "sha256:7b1586ad85c1338a5324a35400d257dcb50d61f0b4344204babf27c2020ae053",
-          "privateEvidence": {
-            "authenticated_read": true,
-            "anonymous_pull_denied": true,
-            "image_digest": "sha256:7b1586ad85c1338a5324a35400d257dcb50d61f0b4344204babf27c2020ae053"
-          }
-        },
-        "privateEvidence": {
-          "authenticated_read": true,
-          "anonymous_pull_denied": true,
-          "image_digest": "sha256:7b1586ad85c1338a5324a35400d257dcb50d61f0b4344204babf27c2020ae053"
         }
       }
     ]
