@@ -1,0 +1,49 @@
+{
+  "sourceSHA": "4c63d50c7213db8be7c77137852dcfbd824d47c1",
+  "beforeSHA": "07dd05e22bec7200b304caaa5c5199eeb17a355c",
+  "expectedServices": [
+    "payyeepay-rpc"
+  ],
+  "publicationPolicy": {
+    "grayRequired": false,
+    "generation": 11
+  },
+  "schema": "cloudlinkpos.public-source-build/v1",
+  "sourceRepository": "sdbcbt/CloudLinkPOS",
+  "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+  "runID": "44742187795",
+  "attempt": "1",
+  "workflowSHA": "b81264ce2bbae11c45494697bc45cf44759952e7",
+  "workflowPath": ".github/workflows/private-main.yml",
+  "receipts": [
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "4c63d50c7213db8be7c77137852dcfbd824d47c1",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "b81264ce2bbae11c45494697bc45cf44759952e7",
+      "runID": "44742187795",
+      "attempt": "1",
+      "service": "payyeepay-rpc",
+      "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
+      "tag": "payyeepay-rpc-v0.1.25",
+      "digest": "sha256:724dd3bfed4202ef4b078ed98fb4ff00ce03cc809be16a85d13a8bccff7c0c88",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "3d6c535a10591f642863f8b7c4c5b2912811784755805492c5d6f2463b085d97",
+      "origin": {
+        "repository": "ghcr.io/sdbcbt/cloudlinkpos",
+        "digest": "sha256:724dd3bfed4202ef4b078ed98fb4ff00ce03cc809be16a85d13a8bccff7c0c88",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:724dd3bfed4202ef4b078ed98fb4ff00ce03cc809be16a85d13a8bccff7c0c88"
+        }
+      },
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:724dd3bfed4202ef4b078ed98fb4ff00ce03cc809be16a85d13a8bccff7c0c88"
+      }
+    }
+  ]
+}
