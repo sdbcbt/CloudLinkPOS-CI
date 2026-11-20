@@ -1,5 +1,55 @@
 [
   {
+    "sourceSHA": "821ddc0ccb1e2377a9ec6f77833f6fb84c71146c",
+    "beforeSHA": "64422f3a73f3d8e98d6a0a7bb9684e310b30cae5",
+    "expectedServices": [
+      "payyeepay-rpc"
+    ],
+    "publicationPolicy": {
+      "grayRequired": false,
+      "generation": 11
+    },
+    "schema": "cloudlinkpos.public-source-build/v1",
+    "sourceRepository": "sdbcbt/CloudLinkPOS",
+    "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+    "runID": "44750877543",
+    "attempt": "1",
+    "workflowSHA": "b81264ce2bbae11c45494697bc45cf44759952e7",
+    "workflowPath": ".github/workflows/private-main.yml",
+    "path": "builds/821ddc0ccb1e2377a9ec6f77833f6fb84c71146c/44750877543-1.json",
+    "receipts": [
+      {
+        "schema": "cloudlinkpos.public-full-build/v1",
+        "sourceRepository": "sdbcbt/CloudLinkPOS",
+        "sourceSHA": "821ddc0ccb1e2377a9ec6f77833f6fb84c71146c",
+        "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+        "workflowSHA": "b81264ce2bbae11c45494697bc45cf44759952e7",
+        "runID": "44750877543",
+        "attempt": "1",
+        "service": "payyeepay-rpc",
+        "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
+        "tag": "payyeepay-rpc-v0.1.26",
+        "digest": "sha256:35d55c117a7c75c068c604746adad38f95580517c466ce8abb3e5fc7c53518ed",
+        "tagPolicy": "version-and-latest-v1",
+        "metadataSHA256": "6804a99a686009b21f5d8769e23e9ae234fad1c1c4caa066c861b93e744f79f3",
+        "origin": {
+          "repository": "ghcr.io/sdbcbt/cloudlinkpos",
+          "digest": "sha256:35d55c117a7c75c068c604746adad38f95580517c466ce8abb3e5fc7c53518ed",
+          "privateEvidence": {
+            "authenticated_read": true,
+            "anonymous_pull_denied": true,
+            "image_digest": "sha256:35d55c117a7c75c068c604746adad38f95580517c466ce8abb3e5fc7c53518ed"
+          }
+        },
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:35d55c117a7c75c068c604746adad38f95580517c466ce8abb3e5fc7c53518ed"
+        }
+      }
+    ]
+  },
+  {
     "sourceSHA": "f4999dcd9db1c7af96628f256b88e95d04129ae0",
     "beforeSHA": "7844c24abcb136cd05fadeb34f460a21a73d12c7",
     "expectedServices": [
@@ -195,56 +245,6 @@
           "authenticated_read": true,
           "anonymous_pull_denied": true,
           "image_digest": "sha256:8188d8cf45f34e7c21010319c61b1a957af3bff1f5c431af33af52d445e3a8b8"
-        }
-      }
-    ]
-  },
-  {
-    "sourceSHA": "f5ec9bed3be05b61e900cdc70fcfaa153f8d4476",
-    "beforeSHA": "a6b7451cd1c9eb17e329048c5ff2f9bb9aaf2d19",
-    "expectedServices": [
-      "payyeepay-rpc"
-    ],
-    "publicationPolicy": {
-      "grayRequired": false,
-      "generation": 11
-    },
-    "schema": "cloudlinkpos.public-source-build/v1",
-    "sourceRepository": "sdbcbt/CloudLinkPOS",
-    "buildRepository": "sdbcbt/CloudLinkPOS-CI",
-    "runID": "44738151306",
-    "attempt": "1",
-    "workflowSHA": "b81264ce2bbae11c45494697bc45cf44759952e7",
-    "workflowPath": ".github/workflows/private-main.yml",
-    "path": "builds/f5ec9bed3be05b61e900cdc70fcfaa153f8d4476/44738151306-1.json",
-    "receipts": [
-      {
-        "schema": "cloudlinkpos.public-full-build/v1",
-        "sourceRepository": "sdbcbt/CloudLinkPOS",
-        "sourceSHA": "f5ec9bed3be05b61e900cdc70fcfaa153f8d4476",
-        "buildRepository": "sdbcbt/CloudLinkPOS-CI",
-        "workflowSHA": "b81264ce2bbae11c45494697bc45cf44759952e7",
-        "runID": "44738151306",
-        "attempt": "1",
-        "service": "payyeepay-rpc",
-        "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
-        "tag": "payyeepay-rpc-v0.1.24",
-        "digest": "sha256:be16aa9fa2f71333c053f993a87ec1fddaa5411de30f29413b34188e4472565a",
-        "tagPolicy": "version-and-latest-v1",
-        "metadataSHA256": "f823f9fafffe5fa1cb600bacb189038e7b192996d6fd8b5f783b13947c0547e3",
-        "origin": {
-          "repository": "ghcr.io/sdbcbt/cloudlinkpos",
-          "digest": "sha256:be16aa9fa2f71333c053f993a87ec1fddaa5411de30f29413b34188e4472565a",
-          "privateEvidence": {
-            "authenticated_read": true,
-            "anonymous_pull_denied": true,
-            "image_digest": "sha256:be16aa9fa2f71333c053f993a87ec1fddaa5411de30f29413b34188e4472565a"
-          }
-        },
-        "privateEvidence": {
-          "authenticated_read": true,
-          "anonymous_pull_denied": true,
-          "image_digest": "sha256:be16aa9fa2f71333c053f993a87ec1fddaa5411de30f29413b34188e4472565a"
         }
       }
     ]
