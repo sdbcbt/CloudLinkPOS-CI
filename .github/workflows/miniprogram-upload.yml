@@ -1,6 +1,6 @@
 name: 小程序自动上传
 # 私库 main 推送命中 apps/miniprogram/ 或 deploy/miniprogram/ 时由 Cloudflare Worker 派发。
-# 构建私库固定提交并用微信 miniprogram-ci 上传为开发版；设为体验版、提审与发布在公众平台人工操作。
+# 构建私库固定提交并上传微信和支付宝开发版；支付宝体验版、提审和发布在开放平台人工操作。
 # 单独成一次运行，失败不影响后端镜像批次的最终结果。源码与构建产物不上传为 Artifact。
 on:
   workflow_dispatch:
@@ -67,13 +67,25 @@ jobs:
           BEFORE_SHA: ${{ inputs.before_sha }}
           APP: ${{ inputs.app }}
         run: |
-          # 小程序名单与改动识别都由私库 deploy/miniprogram/apps.json 决定；本工作流不写死名单，新增小程序无需修改。
-          # 矩阵带上配置名前缀，每个小程序只读取自己的 MP_<KEY>_APPID 与密钥，缺失即失败，不回退到另一个小程序。
-          json=$(node source/deploy/miniprogram/upload.mjs plan "$APP" "$BEFORE_SHA" "$SOURCE_SHA")
+          apps=$(node source/deploy/miniprogram/upload.mjs plan "$APP" "$BEFORE_SHA" "$SOURCE_SHA")
+          json=$(node - "$apps" <<'JS'
+          const apps = JSON.parse(process.argv[2])
+          const alipayApps = new Set(['organization', 'member'])
+          const jobs = apps.flatMap(app => {
+            const entries = [{ ...app, platform: 'weixin' }]
+            if (alipayApps.has(app.app)) {
+              entries.push({ ...app, platform: 'alipay' })
+            }
+            return entries
+          })
+          process.stdout.write(JSON.stringify(jobs))
+          JS
+          )
           echo "apps=$json" >> "$GITHUB_OUTPUT"
           [[ "$json" == "[]" ]] && echo has_apps=false >> "$GITHUB_OUTPUT" || echo has_apps=true >> "$GITHUB_OUTPUT"
           echo "本次上传：$json"
   upload:
+    name: 上传 ${{ matrix.app }}（${{ matrix.platform }}）
     if: needs.plan.outputs.has_apps == 'true'
     needs: plan
     runs-on: ubuntu-24.04
@@ -85,6 +97,7 @@ jobs:
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       APP: ${{ matrix.app }}
+      PLATFORM: ${{ matrix.platform }}
       # 私库源码的安装、编译与上传输出只写入 Runner 临时文件（0600），公开日志只输出白名单结果。
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -112,8 +125,13 @@ jobs:
           echo "PRIVATE_LOG=$RUNNER_TEMP/miniprogram-private.log" >> "$GITHUB_ENV"
           npm install --prefix "$RUNNER_TEMP/pnpm" --registry=https://registry.npmjs.org --ignore-scripts --no-audit --no-fund --package-lock=false pnpm@10.28.2 > /dev/null 2>&1
           echo "$RUNNER_TEMP/pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-          npm install --prefix "$RUNNER_TEMP/mpci" --registry=https://registry.npmjs.org --no-audit --no-fund --package-lock=false miniprogram-ci@2.1.48 > /dev/null 2>&1
+          if [[ "$PLATFORM" == "weixin" ]]; then
+            npm install --prefix "$RUNNER_TEMP/mpci" --registry=https://registry.npmjs.org --no-audit --no-fund --package-lock=false miniprogram-ci@2.1.48 > /dev/null 2>&1
+          else
+            npm install --prefix "$RUNNER_TEMP/minidev" --registry=https://registry.npmjs.org --no-audit --no-fund --package-lock=false minidev@2.2.5 > /dev/null 2>&1
+          fi
       - name: 按 AppID 构建微信小程序
+        if: matrix.platform == 'weixin'
         env:
           # AppID 与接口地址不是密钥，放在仓库 Variables；按 matrix.key 精确读取 MP_<APP>_APPID。
           VITE_WECHAT_APP_ID: ${{ vars[format('MP_{0}_APPID', matrix.key)] }}
@@ -131,7 +149,8 @@ jobs:
             exit 1
           fi
           echo "$APP 编译完成"
-      - name: 上传为开发版
+      - name: 上传微信开发版
+        if: matrix.platform == 'weixin'
         env:
           MP_APPID: ${{ vars[format('MP_{0}_APPID', matrix.key)] }}
           # 代码上传密钥只在 Secrets，按 matrix.key 精确读取 MP_<APP>_UPLOAD_KEY。
@@ -151,6 +170,67 @@ jobs:
           if [[ $status -ne 0 ]]; then exit "$status"; fi
           echo "### $APP 已上传开发版 $version（源码 ${SOURCE_SHA:0:7}）" >> "$GITHUB_STEP_SUMMARY"
           echo '请在微信公众平台“版本管理”设为体验版或提交审核。' >> "$GITHUB_STEP_SUMMARY"
+      - name: 构建支付宝小程序
+        if: matrix.platform == 'alipay'
+        env:
+          MP_APPID: ${{ vars[format('MP_ALIPAY_{0}_APPID', matrix.key)] }}
+          VITE_API_BASE_URL: ${{ vars.MP_API_BASE_URL || 'https://www.cloudlinkpos.com' }}
+        run: |
+          if [[ ! "$MP_APPID" =~ ^[0-9]{16}$ ]]; then
+            echo "支付宝 $APP 的 AppID 缺失或格式不正确" >&2
+            exit 1
+          fi
+          umask 077
+          : > "$PRIVATE_LOG"
+          if ! { pnpm --dir "source/apps/miniprogram/$APP" install --frozen-lockfile --registry=https://registry.npmjs.org --fetch-timeout=120000 --fetch-retries=2 \
+                 && pnpm --dir "source/apps/miniprogram/$APP" run build:mp-alipay; } >> "$PRIVATE_LOG" 2>&1; then
+            echo "支付宝 $APP 依赖安装或编译失败，请在本机复现。" >&2
+            exit 1
+          fi
+          echo "支付宝 $APP 编译完成"
+      - name: 上传支付宝开发版
+        if: matrix.platform == 'alipay'
+        env:
+          MP_APPID: ${{ vars[format('MP_ALIPAY_{0}_APPID', matrix.key)] }}
+          MP_ALIPAY_IDENTITY_JSON: ${{ secrets.MP_ALIPAY_IDENTITY_JSON }}
+          FORCE_COLOR: '0'
+        run: |
+          umask 077
+          project="source/apps/miniprogram/$APP/dist/build/mp-alipay"
+          identity="$RUNNER_TEMP/alipay-identity.json"
+          trap 'rm -f "$identity"' EXIT
+          if ! node - "$project" "$identity" >> "$PRIVATE_LOG" 2>&1 <<'JS'
+          const { readFileSync, writeFileSync } = require('node:fs')
+          const { createPrivateKey } = require('node:crypto')
+          const { join } = require('node:path')
+          const [project, identity] = process.argv.slice(2)
+          const { toolId, privateKey } = JSON.parse(process.env.MP_ALIPAY_IDENTITY_JSON)
+          if (!/^[a-f0-9]{32}$/i.test(toolId) || createPrivateKey(privateKey).asymmetricKeyType !== 'rsa') {
+            throw new Error('支付宝开发工具身份无效')
+          }
+          const file = join(project, 'mini.project.json')
+          const config = JSON.parse(readFileSync(file, 'utf8'))
+          const appid = process.env.MP_APPID
+          if (config.appid && config.appid !== 'touristappid' && config.appid !== appid) {
+            throw new Error('构建产物 AppID 与上传目标不一致')
+          }
+          writeFileSync(file, JSON.stringify({ ...config, appid }) + '\n')
+          const credentials = { alipay: { authentication: { toolId, privateKey } } }
+          writeFileSync(identity, JSON.stringify(credentials), { mode: 0o600, flag: 'wx' })
+          JS
+          then
+            echo "支付宝 $APP 的构建产物或工具身份校验失败" >&2
+            exit 1
+          fi
+          unset MP_ALIPAY_IDENTITY_JSON
+          version="1.$(date -u +%Y%m%d).$((GITHUB_RUN_NUMBER * 1000 + GITHUB_RUN_ATTEMPT))"
+          if ! "$RUNNER_TEMP/minidev/node_modules/.bin/minidev" upload --project "$project" --app-id "$MP_APPID" --identity-key-path "$identity" --version "$version" --version-description "源码 ${SOURCE_SHA:0:7}" >> "$PRIVATE_LOG" 2>&1 ||
+             ! grep -Fxq "本次上传版本: $version" "$PRIVATE_LOG"; then
+            echo "支付宝 $APP 未确认上传成功，请在本机复现或核对支付宝版本管理。" >&2
+            exit 1
+          fi
+          echo "MP-UPLOAD-RESULT app=$APP platform=alipay version=$version"
+          echo "### 支付宝 $APP 已上传开发版 $version（源码 ${SOURCE_SHA:0:7}）" >> "$GITHUB_STEP_SUMMARY"
       - name: 清理私有日志与构建产物
         if: always()
         run: rm -rf "$PRIVATE_LOG" source

@@ -1,0 +1,30 @@
+name: 小程序上传工作流检查
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/miniprogram-upload*.yml'
+      - 'ci/miniprogram-workflow_test.py'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903
+        with:
+          node-version: '22.20.0'
+          package-manager-cache: false
+      - name: 验证上传计划和支付宝目标绑定
+        run: |
+          python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+          python3 ci/miniprogram-workflow_test.py
