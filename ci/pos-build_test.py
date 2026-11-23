@@ -3,14 +3,17 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch, Mock
 
 spec = importlib.util.spec_from_file_location('pos_build', Path(__file__).with_name('pos-build.py'))
 build = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(build)
+real_module = build.module
 
 
 class ScopeTests(unittest.TestCase):
@@ -543,7 +546,8 @@ class WorkflowTests(unittest.TestCase):
         steps = {step.get('name'): step for step in jobs['build']['steps']}
         android_like = "matrix.platform == 'android' || matrix.platform == 'terminal-android'"
         self.assertEqual(steps['准备固定安卓正式签名']['if'], android_like)
-        self.assertEqual(steps['准备安卓固定工具链']['if'], android_like)
+        self.assertEqual(steps['准备安卓固定工具链']['if'],
+                         "matrix.platform == 'android' || (matrix.platform == 'terminal-android' && steps.toolchain.outputs.mode == 'default')")
         self.assertEqual(steps['清理安卓签名临时文件']['if'], 'always() && (' + android_like + ')')
         terminal = steps['静默构建并核验手持刷卡终端安装包']
         self.assertEqual(terminal['if'], "matrix.platform == 'terminal-android'")
@@ -560,6 +564,367 @@ class WorkflowTests(unittest.TestCase):
         self.assertIs(services['required'], False)
         self.assertEqual(main['jobs']['build']['with']['services'], "${{ inputs.services || 'changed' }}")
 
+
+
+TOOLCHAIN = {
+    'schema': 'cloudlinkpos.terminal-android-toolchain/v1',
+    'flutter': {'version': '3.32.8', 'frameworkRevision': 'edada7c56edf4a183c1735310e123c7f923584f1',
+                'engineRevision': 'ef0cd000916d64fa0c5d09cc809fa7ad244a5767', 'dartSdkVersion': '3.8.1'},
+    'android': {'packageName': 'com.cloudlinkpos.terminal', 'minSdk': 22, 'requiredAbi': 'armeabi-v7a', 'ndkVersion': '26.3.11579264'},
+    'entry': 'lib/main_terminal.dart',
+}
+MACHINE = ('Downloading synthetic\n' + json.dumps({'frameworkRevision': TOOLCHAIN['flutter']['frameworkRevision'],
+           'engineRevision': TOOLCHAIN['flutter']['engineRevision'], 'dartSdkVersion': '3.8.1 (stable)'})).encode()
+# 与私库 #492 build_terminal_android.py 同名契约函数的最小替身：公开 CI 测试不读取私库源码。
+FAKE_BUILDER = r"""
+import json, shutil
+from pathlib import Path
+CALLS = []
+def load_toolchain(path=None):
+    path = path or Path(__file__).resolve().parent / 'terminal-android/toolchain.json'
+    return json.loads(Path(path).read_text(encoding='utf-8'))
+def check_flutter(machine_json, toolchain):
+    CALLS.append(('check_flutter', json.loads(machine_json)['frameworkRevision']))
+def prepare_workspace(source, workspace, key_properties=None):
+    app = Path(workspace) / 'apps/pos'
+    if app.exists():
+        raise ValueError('exists')
+    (app / 'android').mkdir(parents=True)
+    if key_properties:
+        shutil.copyfile(key_properties, app / 'android/key.properties')
+    CALLS.append(('prepare_workspace', str(source), str(workspace), str(key_properties) if key_properties else None))
+    return app
+"""
+
+
+class TerminalApi22Tests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.base = Path(self.temporary.name)
+        self.root = self.base / 'source'
+        self.runner = self.base / 'runner'
+        self.runner.mkdir()
+        (self.root / 'dev/packaging/terminal-android').mkdir(parents=True)
+        self.write_toolchain(TOOLCHAIN)
+        (self.root / build.TERMINAL_BUILDER).write_text(FAKE_BUILDER, encoding='utf-8')
+        tools = self.base / 'sdk/build-tools/35.0.0'
+        tools.mkdir(parents=True)
+        (tools / 'apksigner').touch()
+        self.tools = tools
+        self.env = {'RELEASE_PLATFORM': 'terminal-android', 'RUNNER_TEMP': str(self.runner),
+                    'POS_VERSION': '1.0.2185', 'POS_BUILD_NUMBER': '2185', 'POS_SOURCE_SHA': 'a' * 40,
+                    'ANDROID_HOME': str(self.base / 'sdk'), 'GITHUB_ENV': str(self.base / 'env'),
+                    'GITHUB_PATH': str(self.base / 'path'), 'GITHUB_OUTPUT': str(self.base / 'out'),
+                    'POS_FLUTTER_BIN': str(self.runner / 'cloudlinkpos-terminal-flutter/flutter/bin/flutter'),
+                    'POS_TERMINAL_NDK': str(self.base / 'sdk/ndk/26.3.11579264'),
+                    'GITHUB_REPOSITORY': 'sdbcbt/CloudLinkPOS-CI', 'GITHUB_REF': 'refs/heads/main'}
+        patcher = patch.object(build, 'ROOT', self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write_toolchain(self, value):
+        (self.root / build.TERMINAL_TOOLCHAIN).write_text(json.dumps(value), encoding='utf-8')
+
+    def mutated(self, section, key, value):
+        changed = json.loads(json.dumps(TOOLCHAIN))
+        if section:
+            changed[section][key] = value
+        else:
+            changed[key] = value
+        return changed
+
+    def test_only_terminal_matrix_with_full_declaration_selects_api22(self):
+        with patch.dict(os.environ, self.env):
+            self.assertEqual(build.terminal_toolchain()['sha256'], build.TERMINAL_FLUTTER['3.32.8']['sha256'])
+            for platform in ['android', 'windows', '']:
+                with self.subTest(platform=platform), patch.dict(os.environ, {'RELEASE_PLATFORM': platform}):
+                    self.assertIsNone(build.terminal_toolchain())
+            (self.root / build.TERMINAL_BUILDER).unlink()
+            with self.assertRaisesRegex(ValueError, '不完整'):
+                build.terminal_toolchain()
+            (self.root / build.TERMINAL_TOOLCHAIN).unlink()
+            # 旧固定源码：两个声明都没有，继续走 3.44。
+            self.assertIsNone(build.terminal_toolchain())
+            build.main('toolchain')
+            self.assertEqual((self.base / 'out').read_text(), 'mode=default\n')
+
+    def test_toolchain_mode_output_never_contains_private_manifest(self):
+        value = dict(TOOLCHAIN, description='synthetic private description')
+        self.write_toolchain(value)
+        with patch.dict(os.environ, self.env):
+            build.main('toolchain')
+        self.assertEqual((self.base / 'out').read_text(), 'mode=api22\n')
+
+    def test_manifest_cannot_choose_unpinned_flutter_or_other_targets(self):
+        cases = [self.mutated('flutter', 'version', '3.44.0'), self.mutated('flutter', 'frameworkRevision', 'f' * 40),
+                 self.mutated('flutter', 'engineRevision', 'f' * 40), self.mutated('flutter', 'dartSdkVersion', '3.12.0'),
+                 self.mutated('android', 'minSdk', 24), self.mutated('android', 'requiredAbi', 'arm64-v8a'),
+                 self.mutated('android', 'packageName', 'com.cloudlinkpos.pos'), self.mutated('android', 'ndkVersion', '27.0.12077973'),
+                 self.mutated(None, 'entry', 'lib/main.dart')]
+        for value in cases:
+            with self.subTest(value=value), patch.dict(os.environ, self.env):
+                self.write_toolchain(value)
+                with self.assertRaises(ValueError):
+                    build.terminal_toolchain()
+                self.assertEqual(build.SUBSTAGE, 'toolchain.declaration')
+
+    def install(self, content, machine=MACHINE, revision='26.3.11579264'):
+        def fake_run(args, cwd=None, env=None):
+            if args[0] == 'curl':
+                Path(args[args.index('-o') + 1]).write_bytes(content)
+            elif args[0].endswith('sdkmanager'):
+                ndk = self.base / 'sdk/ndk' / args[-1].split(';')[1]
+                ndk.mkdir(parents=True, exist_ok=True)
+                (ndk / 'source.properties').write_text('Pkg.Desc = Android NDK\nPkg.Revision = ' + revision + '\n')
+            elif args[1:2] == ['--version']:
+                return machine
+            return b''
+        with patch.dict(os.environ, self.env), patch.object(build, 'run', side_effect=fake_run) as invoke:
+            build.main('terminal-toolchain')
+        return invoke
+
+    def test_installs_official_archive_by_public_digest_into_isolated_directory(self):
+        content = b'synthetic flutter archive'
+        pinned = dict(build.TERMINAL_FLUTTER['3.32.8'], sha256=build.hashlib.sha256(content).hexdigest())
+        with patch.dict(build.TERMINAL_FLUTTER, {'3.32.8': pinned}):
+            invoke = self.install(content)
+        calls = [call.args[0] for call in invoke.call_args_list]
+        self.assertEqual(calls[0][-3], 'https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.32.8-stable.tar.xz')
+        self.assertEqual(calls[1][:2], ['tar', '-xf'])
+        self.assertEqual(calls[2][0], str(self.runner / 'cloudlinkpos-terminal-flutter/flutter/bin/flutter'))
+        self.assertEqual(calls[3][-2:], ['--install', 'ndk;26.3.11579264'])
+        written = (self.base / 'env').read_text()
+        self.assertIn('POS_FLUTTER_BIN=' + str(self.runner / 'cloudlinkpos-terminal-flutter/flutter/bin/flutter'), written)
+        self.assertIn('POS_TERMINAL_NDK=' + str(self.base / 'sdk/ndk/26.3.11579264'), written)
+        self.assertEqual((self.base / 'path').read_text(), str(self.runner / 'cloudlinkpos-terminal-flutter/flutter/bin') + '\n')
+        self.assertFalse((self.runner / 'cloudlinkpos-terminal-flutter.tar.xz').exists())
+
+    def test_official_digest_revision_or_ndk_mismatch_stops(self):
+        # 真实固定摘要 + 任意伪造归档：摘要不符即停，不解压。
+        with self.assertRaisesRegex(ValueError, '摘要不匹配'):
+            self.install(b'tampered archive')
+        self.assertEqual(build.SUBSTAGE, 'toolchain.flutter_digest')
+        self.assertFalse((self.base / 'env').exists())
+        content = b'synthetic'
+        pinned = dict(build.TERMINAL_FLUTTER['3.32.8'], sha256=build.hashlib.sha256(content).hexdigest())
+        for machine, revision, stage in [(MACHINE.replace(b'3.8.1', b'3.12.0'), '26.3.11579264', 'toolchain.flutter_revision'),
+                                         (MACHINE, '27.0.12077973', 'toolchain.ndk')]:
+            with self.subTest(stage=stage), patch.dict(build.TERMINAL_FLUTTER, {'3.32.8': pinned}):
+                for path in self.runner.iterdir():
+                    shutil.rmtree(path) if path.is_dir() else path.unlink()
+                with self.assertRaises(ValueError):
+                    self.install(content, machine, revision)
+                self.assertEqual(build.SUBSTAGE, stage)
+                self.assertFalse((self.base / 'env').exists())
+
+    def evidence(self, apk, **override):
+        value = {'schema': 'cloudlinkpos.terminal-android-evidence/v1', 'apkSHA256': build.file_sha256(apk),
+                 'packageName': 'com.cloudlinkpos.terminal', 'versionName': '1.0.2185', 'versionCode': '2185', 'minSdk': 22,
+                 'nativeCode': ['armeabi-v7a'], 'signerCertSHA256': build.ANDROID_SIGNER_CERT_SHA256, 'v1Signature': True,
+                 'nativeLibs': ['lib/armeabi-v7a/libapp.so', 'lib/armeabi-v7a/libflutter.so'], 'flutter': TOOLCHAIN['flutter'],
+                 'symbolCheckedLibs': ['libapp.so', 'libflutter.so']}
+        value.update(override)
+        return value
+
+    def build_terminal(self, override=None, key=True, embedded=b'a' * 40, env=None):
+        if key:
+            properties = self.root / 'apps/pos/android/key.properties'
+            properties.parent.mkdir(parents=True, exist_ok=True)
+            properties.write_text('storeFile=/runner/cloudlinkpos-release.keystore\n')
+        signature = ('Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n').encode()
+        badging = b"package: name='com.cloudlinkpos.terminal' versionCode='2185' versionName='1.0.2185'\nminSdkVersion:'22'\n"
+        loaded = {}
+        def fake_module(name, path):
+            if name == 'build_terminal_android':
+                loaded.setdefault('builder', build.module.__wrapped__(name, path) if hasattr(build.module, '__wrapped__') else real_module(name, path))
+                return loaded['builder']
+            loaded['verifier'] = Mock()
+            return loaded['verifier']
+        def fake_run(args, cwd=None, env=None):
+            if args[1:2] == ['--version']:
+                return MACHINE
+            if args[2:3] == ['build']:
+                output = Path(args[args.index('--workspace') + 1]) / 'apps/pos/build/app/outputs/flutter-apk'
+                output.mkdir(parents=True)
+                with zipfile.ZipFile(output / 'app-release.apk', 'w') as archive:
+                    archive.writestr('lib/armeabi-v7a/libapp.so', b'\x00snapshot' + embedded + b'\x00')
+                    archive.writestr('lib/armeabi-v7a/libflutter.so', b'engine')
+            if 'apksigner' in args[0]:
+                return signature
+            if 'verify' in args[2:3]:
+                apk = Path(args[args.index('--apk') + 1])
+                Path(args[args.index('--evidence') + 1]).write_text(json.dumps(self.evidence(apk, **(override or {}))))
+            if args[0].endswith('aapt'):
+                return badging
+            return b''
+        with patch.dict(os.environ, dict(self.env, **(env or {}))), patch.object(build, 'module', side_effect=fake_module), \
+                patch.object(build, 'run', side_effect=fake_run) as invoke:
+            try:
+                build.terminal_android()
+            finally:
+                os.environ.pop('ORG_GRADLE_PROJECT_CLP_APP_VARIANT', None)
+        return invoke, loaded
+
+    def test_api22_build_passes_plan_version_source_identity_and_formal_keystore(self):
+        invoke, loaded = self.build_terminal()
+        calls = [call.args[0] for call in invoke.call_args_list]
+        app = self.runner / 'cloudlinkpos-terminal-build/apps/pos'
+        flutter_bin = self.env['POS_FLUTTER_BIN']
+        self.assertEqual(calls[0], [flutter_bin, '--version', '--machine', '--suppress-analytics'])
+        # 调用私库脚本 build：本轮版本、完整私库源码 SHA 与既有正式签名 key.properties。
+        self.assertEqual(calls[1], [os.sys.executable, str(self.root / build.TERMINAL_BUILDER), 'build',
+                                    '--workspace', str(self.runner / 'cloudlinkpos-terminal-build'), '--flutter', flutter_bin,
+                                    '--key-properties', str(self.root / 'apps/pos/android/key.properties'),
+                                    '--build-name', '1.0.2185', '--build-number', '2185', '--source-sha', 'a' * 40])
+        self.assertIsNone(invoke.call_args_list[1].kwargs.get('env'))
+        self.assertFalse([key for key in os.environ if key.startswith('ORG_GRADLE_PROJECT_')])
+        self.assertIn('apksigner', calls[2][0])
+        verify = calls[3]
+        self.assertEqual(verify[1:3], [str(self.root / build.TERMINAL_BUILDER), 'verify'])
+        self.assertEqual(verify[verify.index('--ndk') + 1], self.env['POS_TERMINAL_NDK'])
+        self.assertEqual(verify[verify.index('--apk') + 1], str(app / 'build/app/outputs/flutter-apk/app-release.apk'))
+        self.assertTrue(calls[4][0].endswith('aapt'))
+        loaded['verifier'].verify.assert_called_once_with(
+            "package: name='com.cloudlinkpos.terminal' versionCode='2185' versionName='1.0.2185'\nminSdkVersion:'22'\n",
+            '1.0.2185', 2185, 'com.cloudlinkpos.terminal')
+        written = (self.base / 'env').read_text()
+        self.assertIn('POS_ANDROID_SIGNER_CERT_SHA256=' + build.ANDROID_SIGNER_CERT_SHA256, written)
+        self.assertIn('POS_ANDROID_PACKAGE_NAME=com.cloudlinkpos.terminal', written)
+
+    def test_api22_apk_must_embed_this_round_source_sha(self):
+        with self.assertRaisesRegex(ValueError, '源码身份'):
+            self.build_terminal(embedded=b'b' * 40)
+        self.assertEqual(build.SUBSTAGE, 'android.api22')
+        self.assertFalse((self.base / 'env').exists())
+
+    def test_api22_source_identity_must_be_the_fixed_full_sha(self):
+        for env in [{'POS_SOURCE_SHA': 'a' * 12}, {'POS_SOURCE_SHA': 'A' * 40}, {'SOURCE_SHA': 'b' * 40}]:
+            with self.subTest(env=env), self.assertRaisesRegex(ValueError, '源码身份'):
+                invoke, _ = self.build_terminal(env=env)
+            self.assertFalse((self.base / 'env').exists())
+
+    def test_api22_evidence_must_match_plan_certificate_and_target(self):
+        cases = [{'minSdk': 24}, {'minSdk': '22'}, {'v1Signature': False}, {'signerCertSHA256': '0' * 64},
+                 {'versionName': '1.0.1'}, {'versionCode': '1'}, {'packageName': 'com.cloudlinkpos.pos'},
+                 {'nativeLibs': ['lib/arm64-v8a/libapp.so', 'lib/arm64-v8a/libflutter.so']}, {'apkSHA256': '0' * 64},
+                 {'symbolCheckedLibs': []}, {'schema': 'other'}]
+        for override in cases:
+            with self.subTest(override=override):
+                shutil.rmtree(self.runner)
+                self.runner.mkdir()
+                (self.base / 'env').unlink(missing_ok=True)
+                with self.assertRaisesRegex(ValueError, '核验证据'):
+                    self.build_terminal(override)
+                self.assertEqual(build.SUBSTAGE, 'android.api22')
+                self.assertFalse((self.base / 'env').exists())
+
+    def test_api22_requires_existing_formal_keystore_before_compiling(self):
+        with self.assertRaisesRegex(ValueError, '正式签名'):
+            invoke, _ = self.build_terminal(key=False)
+        self.assertEqual(build.SUBSTAGE, 'android.compile')
+
+    def test_api22_tests_run_in_isolated_workspace(self):
+        with patch.dict(os.environ, self.env), patch.object(build, 'run') as invoke:
+            build.main('test')
+        app = self.runner / 'cloudlinkpos-terminal-test/apps/pos'
+        flutter_bin = self.env['POS_FLUTTER_BIN']
+        self.assertEqual([call.args[:2] for call in invoke.call_args_list[1:]], [
+            ([flutter_bin, '--suppress-analytics', 'pub', 'get', '--enforce-lockfile'], app),
+            ([flutter_bin, '--suppress-analytics', 'test', '--no-pub', 'test/terminal', 'test/services/device_information_service_test.dart'], app)])
+        self.assertFalse((app / 'android/key.properties').exists())
+
+    def test_api22_package_reads_isolated_workspace_output(self):
+        with patch.dict(os.environ, self.env), patch.object(build, 'run') as invoke:
+            build.main('package')
+        self.assertEqual(invoke.call_args.args[0][1:], ['dev/packaging/pos_release.py', 'package', '--platform', 'terminal-android', '--input',
+                                                       str(self.runner / 'cloudlinkpos-terminal-build/apps/pos/build/app/outputs/flutter-apk')])
+
+    def signing_copy(self, content, recorded):
+        copy = self.runner / 'cloudlinkpos-terminal-build/apps/pos/android/key.properties'
+        copy.parent.mkdir(parents=True)
+        copy.write_bytes(content)
+        marker = {str(self.root / 'apps/pos/android/key.properties'): build.hashlib.sha256(recorded).hexdigest(),
+                  str(self.runner / 'cloudlinkpos-release.keystore'): '0' * 64}
+        (self.runner / build.SIGNING_MARKER).write_text(json.dumps(marker))
+        return copy
+
+    def test_cleanup_removes_owned_workspace_signing_copy_then_existing_cleanup(self):
+        copy = self.signing_copy(b'storeFile=x\n', b'storeFile=x\n')
+        with patch.dict(os.environ, self.env), patch.object(build, 'run') as invoke:
+            build.main('cleanup')
+        self.assertFalse(copy.exists())
+        self.assertEqual(invoke.call_args.args[0][1:], ['dev/packaging/prepare_android_signing.py', '--cleanup'])
+
+    def test_cleanup_refuses_changed_copy_but_still_runs_existing_cleanup(self):
+        copy = self.signing_copy(b'storeFile=changed\n', b'storeFile=x\n')
+        with patch.dict(os.environ, self.env), patch.object(build, 'run') as invoke, self.assertRaisesRegex(ValueError, '拒绝清理'):
+            build.main('cleanup')
+        self.assertTrue(copy.exists())
+        invoke.assert_called_once()
+
+    def test_api22_private_failure_output_stays_private(self):
+        script = Path(__file__).with_name('pos-build.py').resolve()
+        code = """
+import runpy, subprocess, sys
+from unittest.mock import patch
+failure = subprocess.CompletedProcess(['private'], 3, stdout=b'private source text', stderr=b'secret=never-public')
+sys.argv = [sys.argv[1], 'terminal-toolchain']
+with patch.object(subprocess, 'run', return_value=failure):
+    runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+        work = self.base / 'work'
+        (work / 'source').parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.root, work / 'source')
+        env = dict(os.environ, **self.env, PYTHONIOENCODING='utf-8')
+        env.pop('SOURCE_TOKEN', None)
+        result = subprocess.run([os.sys.executable, '-c', code, str(script)], cwd=work, env=env, capture_output=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn(b'private', result.stdout + result.stderr)
+        self.assertNotIn(b'never-public', result.stdout + result.stderr)
+        self.assertEqual(result.stderr.decode('utf-8').splitlines(), [
+            '::error::收银客户端构建停止于：terminal-toolchain；子阶段：toolchain.flutter_download；exit_code=3；category=unknown；请在私库受控环境复现。'])
+        self.assertIn(b'private source text', (self.runner / 'cloudlinkpos-pos-first-failure.log').read_bytes())
+
+
+class Api22WorkflowTests(unittest.TestCase):
+    def test_isolated_toolchain_only_for_terminal_and_default_paths_unchanged(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        workflow = yaml.safe_load((root / '.github/workflows/client-release.yml').read_text())
+        steps = workflow['jobs']['build']['steps']
+        names = [step.get('name') for step in steps]
+        decide = steps[names.index('判定手持安卓工具链')]
+        self.assertEqual(decide['if'], "matrix.platform == 'terminal-android'")
+        self.assertEqual(decide['id'], 'toolchain')
+        self.assertEqual(decide['run'], 'python3 automation/ci/pos-build.py toolchain')
+        self.assertNotIn('env', decide)
+        isolated = steps[names.index('准备手持 API 22 隔离工具链')]
+        self.assertEqual(isolated['if'], "matrix.platform == 'terminal-android' && steps.toolchain.outputs.mode == 'api22'")
+        self.assertIn('python3 automation/ci/pos-build.py terminal-toolchain', isolated['run'])
+        self.assertNotIn('env', isolated)
+        self.assertNotIn('secrets.', isolated['run'])
+        default = steps[names.index('准备安卓固定工具链')]
+        # 横屏收银 Android 与未声明新工具链的旧手持源码继续使用固定 3.44 摘要。
+        self.assertIn('flutter_linux_3.44.0-stable.tar.xz', default['run'])
+        self.assertIn('e1ec95e6c550458a34de93580cb85dac24da0e9bedb9bb42811f050ac5a0c7d5', default['run'])
+        windows = steps[names.index('下载固定 Windows Flutter SDK')]
+        self.assertEqual(windows['if'], "matrix.platform == 'windows'")
+        self.assertIn('flutter_windows_3.44.0-stable.zip', windows['run'])
+        # 顺序：签名 → 判定 → 工具链 → 测试 → 构建 → 打包 → 发布 → 清理。
+        order = ['准备固定安卓正式签名', '判定手持安卓工具链', '准备安卓固定工具链', '准备手持 API 22 隔离工具链',
+                 '静默运行打包边界与软件版本测试', '静默构建并核验手持刷卡终端安装包', '生成源码版本清单和 SHA-256',
+                 '核验并发布公开永久下载附件', '清理安卓签名临时文件']
+        self.assertEqual([name for name in names if name in order], order)
+        # 两个入口工作流仍各自独立，不引用 API 22 步骤。
+        for name in ['build-pos-release.yml', 'build-terminal-release.yml']:
+            self.assertNotIn('terminal-toolchain', (root / '.github/workflows' / name).read_text())
+
+    def test_public_pins_match_official_release_metadata(self):
+        pinned = build.TERMINAL_FLUTTER
+        self.assertEqual(list(pinned), ['3.32.8'])
+        self.assertEqual(pinned['3.32.8']['sha256'], 'c2c7d75f9be53f10f3fdba2f7e042b2ef0852cc088392b374bcec34c6204ed8c')
+        self.assertTrue(pinned['3.32.8']['archive'].startswith('https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/'))
 
 
 if __name__ == '__main__':
