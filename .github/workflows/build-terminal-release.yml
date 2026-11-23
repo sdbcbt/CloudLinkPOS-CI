@@ -1,0 +1,37 @@
+name: 手持 POS 永久版本构建
+run-name: 手持 POS Android · ${{ inputs.source_sha }}
+# 只构建手持 POS（terminal-android）：独立运行、独立并发组，复用 client-release.yml 的公共步骤。
+# 首期只交付安装包，不生成 OTA 附件。
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 已合并私库 main 的完整源码提交
+        required: true
+        type: string
+      platform:
+        description: 构建平台
+        type: choice
+        options: [terminal-android, changed]
+        default: terminal-android
+      before_sha:
+        description: 自动通知的私库推送前提交，手动选 terminal-android 时留空
+        default: ''
+        type: string
+permissions: {}
+concurrency:
+  group: terminal-permanent-releases
+  cancel-in-progress: false
+  queue: max
+jobs:
+  release:
+    if: github.repository == 'sdbcbt/CloudLinkPOS-CI' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/client-release.yml
+    with:
+      product: terminal
+      source_sha: ${{ inputs.source_sha }}
+      before_sha: ${{ inputs.before_sha }}
+      platform: ${{ inputs.platform }}
+    secrets: inherit

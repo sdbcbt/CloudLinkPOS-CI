@@ -1,10 +1,10 @@
 name: 收银构建边界测试
 on:
   pull_request:
-    paths: ['ci/pos-build*', 'ci/report-pos-failure*', '.github/workflows/build-pos-release.yml', '.github/workflows/pos-automation-tests.yml']
+    paths: ['ci/pos-build*', 'ci/report-pos-failure*', '.github/workflows/build-pos-release.yml', '.github/workflows/build-terminal-release.yml', '.github/workflows/client-release.yml', 'ci/dispatch-guard_test.py', '.github/workflows/pos-automation-tests.yml']
   push:
     branches: [main]
-    paths: ['ci/pos-build*', 'ci/report-pos-failure*', '.github/workflows/build-pos-release.yml', '.github/workflows/pos-automation-tests.yml']
+    paths: ['ci/pos-build*', 'ci/report-pos-failure*', '.github/workflows/build-pos-release.yml', '.github/workflows/build-terminal-release.yml', '.github/workflows/client-release.yml', 'ci/dispatch-guard_test.py', '.github/workflows/pos-automation-tests.yml']
 permissions:
   contents: read
 jobs:
@@ -26,3 +26,4 @@ jobs:
         run: |
           python3 ci/pos-build_test.py
           python3 ci/report-pos-failure_test.py
+          python3 ci/dispatch-guard_test.py

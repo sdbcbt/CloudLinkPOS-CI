@@ -1,7 +1,7 @@
 
 ### 派发者限制
 
-`build-pos-release.yml`、`private-main.yml`（经 `full-version-build.yml`）、`full-version-build.yml`、`miniprogram-upload.yml`、`private-quality.yml` 只接受通知机器人 `cloudlinkpos-ci-notifier[bot]` 派发（2026-11-12 用户决定）：首个作业的第一步核对 `github.actor`，任何人在 Actions 页面手动 Run workflow 都会在该步失败，后续作业不会执行。
+`build-pos-release.yml`、`build-terminal-release.yml`（两者经 `client-release.yml`）、`private-main.yml`（经 `full-version-build.yml`）、`full-version-build.yml`、`miniprogram-upload.yml`、`private-quality.yml` 只接受通知机器人 `cloudlinkpos-ci-notifier[bot]` 派发（2026-11-12 用户决定）：首个作业的第一步核对 `github.actor`，任何人在 Actions 页面手动 Run workflow 都会在该步失败，后续作业不会执行。
 
 - 失败批次使用 **Re-run all jobs** 重跑：重跑时 `github.actor` 仍是原派发者，照常执行。
 - 需要新的构建：合并私库 main，由 Webhook → Cloudflare Worker 自动派发；Worker 已接收但未派发的任务按 ID 在 Worker 重试。
@@ -27,13 +27,15 @@
 
 Windows / Android 在本公开仓库的 [收银客户端永久版本构建](https://github.com/sdbcbt/CloudLinkPOS-CI/actions/workflows/build-pos-release.yml) 工作流执行，并将安装包、`release-manifest.json` 和 `SHA256SUMS.txt` 发布到 [GitHub Releases](https://github.com/sdbcbt/CloudLinkPOS-CI/releases)。Windows 同时保留中文安装向导与便携 ZIP；下载附件不依赖 Actions Artifact 保留期限。历史私库 Releases 不删除、不覆盖。
 
-私库 main 推送由现有 Cloudflare Worker 单独派发客户端任务，工作流按 before/after 识别 POS 与打包路径；无客户端改动不编译。输入为已合并私库 main 第一父链的完整 `source_sha`；`platform` 为 `all`、`windows`、`android`，或配合 `before_sha` 的 `changed`。只接受通知机器人派发，见「派发者限制」。源码由既有 App 短期只读令牌静默读取，不向公开日志、仓库或 Artifact 上传源码及私库构建日志。
+横屏收银与手持 POS 是两个独立工作流、两个独立运行：`build-pos-release.yml` 只构建 Windows + Android 收银客户端（并发组 `pos-permanent-releases`），[`build-terminal-release.yml`](https://github.com/sdbcbt/CloudLinkPOS-CI/actions/workflows/build-terminal-release.yml) 只构建手持 POS Android（并发组 `terminal-permanent-releases`）。两者只是入口，规划、签名、构建、核验、发布与失败回写共用 `client-release.yml`（`product` 为 `pos` 或 `terminal`）。
+
+私库 main 推送由现有 Cloudflare Worker 按私库 `dev/packaging/client-routes.json` 分别派发：手持专属改动只派发手持，收银专属改动只派发收银，共用改动两个都派发，推送范围不明确时两个都派发。每个运行再在固定源码上按 before/after 精确判断：新源码由私库 `dev/packaging/client_scope.py` 用同一路由表加 Dart 导入闭包判断本产品是否受影响（例如 `lib/data/` 中只被收银机导入的文件不构建手持）；没有该模块的旧固定源码沿用原路径规则，两个产品都视为受影响；不支持手持入口的更旧源码，手持运行只完成规划不构建。未受影响时只规划不编译。输入为已合并私库 main 第一父链的完整 `source_sha`；收银 `platform` 为 `all`、`windows`、`android` 或配合 `before_sha` 的 `changed`，手持为 `terminal-android` 或 `changed`。只接受通知机器人派发，见「派发者限制」。源码由既有 App 短期只读令牌静默读取，不向公开日志、仓库或 Artifact 上传源码及私库构建日志。
 
 收银构建的首个失败输出仅独占暂存在 Runner 临时目录；POSIX 文件权限为 `0600`，Windows 使用任务隔离临时目录。失败时复用既有 CI App 的 `contents:read` 与 `checks:write` 短期令牌，仅向私库 `sdbcbt/CloudLinkPOS` 对应固定提交创建平台失败 CheckRun，不授予私库 contents 写入权限。报告会复核 plan、当前检出 SHA 和已读取 main 首父历史，替换四项签名 Secrets 与令牌原值后，仅保留最多 24KB 末尾；详情只在私库可见，不进入公开 Summary 或 Artifact。清理失败不会覆盖首个失败，任何回写错误也不输出日志、API 响应或凭据。
 
 Release 标签指向公开 CI 的构建配置提交；安装包版本、附件名称、清单与软件内源码 SHA 对应私库固定提交。公开源码 ZIP 只包含 CI 配置，不包含客户端源码。附件上传草稿后核对远端 SHA-256，再公开发布；已有附件不同摘要即失败，绝不覆盖。
 
-**手持刷卡终端（terminal-android）**：固定源码的 `dev/packaging/pos_release.py` 在 `PLATFORMS` 声明 `terminal-android` 且存在 `apps/pos/lib/main_terminal.dart` 时，`changed`/`all` 规划额外增加独立矩阵目标 `terminal-android`，触发路径与收银端相同；旧源码不声明时只构建原有两个平台，可先合并 CI 再合并私库。该目标以 `-t lib/main_terminal.dart` 与 Gradle 属性 `CLP_APP_VARIANT=terminal` 构建 release APK，复用同一把正式签名，核验证书 SHA-256、`versionName`/`versionCode` 及包名 `com.cloudlinkpos.terminal`，发布为独立的永久 Release，标签 `terminal-android-v软件版本.源码SHA前12位`，附件为 `CloudLinkPOS-terminal-android-v版本-b构建号-SHA.apk`、`release-manifest.json`（含 `packageName` 与 `signerCertSHA256`）及 `SHA256SUMS.txt`。首期只交付安装包：不注入升级信任公钥与发布私钥，不生成 OTA 附件；失败详情写入私库 `terminal-android-build-failure` 检查。版本管理、OTA 与联迪真机验证留待后续。
+**手持 POS（terminal-android）**：只在 `build-terminal-release.yml` 的独立运行中构建，要求固定源码的 `dev/packaging/pos_release.py` 在 `PLATFORMS` 声明 `terminal-android` 且存在 `apps/pos/lib/main_terminal.dart`。该目标以 `-t lib/main_terminal.dart` 与 Gradle 属性 `CLP_APP_VARIANT=terminal` 构建 release APK，复用同一把正式签名，核验证书 SHA-256、`versionName`/`versionCode` 及包名 `com.cloudlinkpos.terminal`，发布为独立的永久 Release，标签 `terminal-android-v软件版本.源码SHA前12位`，附件为 `CloudLinkPOS-terminal-android-v版本-b构建号-SHA.apk`、`release-manifest.json`（含 `packageName` 与 `signerCertSHA256`）及 `SHA256SUMS.txt`。首期只交付安装包：不注入升级信任公钥与发布私钥，不生成 OTA 附件；失败详情写入私库 `terminal-android-build-failure` 检查。版本管理、OTA 与联迪真机验证留待后续。
 
 Android 需要在本公开仓库配置固定正式签名的 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_PASSWORD`、`ANDROID_KEY_ALIAS`。缺失时该平台明确失败，不生成临时签名或使用 debug 签名；Windows 独立继续。客户端使用单独的工作流运行，避免 Android 签名失败改变后端镜像收据的最终状态。构建成功不代表真机 UI、OTA 或外设验收。
 

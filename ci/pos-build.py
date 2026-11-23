@@ -15,6 +15,8 @@ PLATFORMS = ('windows', 'android')
 # 手持刷卡终端是独立构建目标：同一 apps/pos 包的 lib/main_terminal.dart 入口加 CLP_APP_VARIANT=terminal。
 TERMINAL_PLATFORM = 'terminal-android'
 TARGETS = (*PLATFORMS, TERMINAL_PLATFORM)
+# 两个产品分别由独立工作流派发与运行：pos 为横屏收银（Windows+Android），terminal 为手持 POS（Android）。
+PRODUCTS = {'pos': PLATFORMS, 'terminal': (TERMINAL_PLATFORM,)}
 TERMINAL_PACKAGE = 'com.cloudlinkpos.terminal'
 TERMINAL_ENTRY = 'lib/main_terminal.dart'
 ANDROID_SIGNER_CERT_SHA256 = 'b118b7c8f118d1c8b1c1115856615ee7ae1076022049a2c71f9190901a7c7d9e'
@@ -80,8 +82,17 @@ def module(name, path):
 
 
 def changed(paths):
-    return any(path.startswith(('apps/pos/', 'dev/packaging/', '.github/workflows/build-pos-'))
+    return any(path.startswith(('apps/pos/', 'dev/packaging/', '.github/workflows/build-pos-', '.github/workflows/build-terminal-'))
                or path == 'dev/development/build-pos-windows.ps1' for path in paths)
+
+
+def affected(product, paths):
+    # 新源码自带 client_scope.py：按私库路由表与 Dart 导入闭包精确判断本产品是否受影响。
+    # 旧固定源码没有该模块时沿用原路径规则，两个产品都视为受影响，宁可多构建也不漏构建。
+    helper = ROOT / 'dev/packaging/client_scope.py'
+    if not helper.is_file():
+        return changed(paths)
+    return product in module('client_scope', helper).scopes(ROOT, paths)
 
 
 def terminal_supported(source):
@@ -91,10 +102,13 @@ def terminal_supported(source):
 
 
 def plan():
+    product = os.environ.get('BUILD_PRODUCT', '')
+    if product not in PRODUCTS:
+        raise ValueError('构建产品无效')
     selected = os.environ.get('BUILD_PLATFORM', 'changed')
-    if selected not in ('all', 'changed', *TARGETS):
-        raise ValueError('构建平台无效')
-    affected = True
+    if selected not in ('all', 'changed', *PRODUCTS[product]):
+        raise ValueError('构建平台不属于本产品')
+    hit = True
     if selected == 'changed':
         before = os.environ.get('SOURCE_BEFORE_SHA', '')
         if not re.fullmatch('[0-9a-f]{40}', before) or before == '0' * 40:
@@ -103,16 +117,14 @@ def plan():
         if before not in history:
             raise ValueError('主线推送基线不属于当前提交历史')
         paths = run(['git', 'diff', '--name-only', '--no-renames', before, os.environ['SOURCE_SHA']]).decode().splitlines()
-        affected = changed(paths)
+        hit = affected(product, paths)
     source = module('pos_release', ROOT / 'dev/packaging/pos_release.py')
-    supported = terminal_supported(source)
-    if selected == TERMINAL_PLATFORM and not supported:
-        raise ValueError('固定源码尚不支持手持终端构建')
-    if selected in ('all', 'changed'):
-        # 手持终端与收银机共用 apps/pos 与打包路径，范围命中时作为独立矩阵目标并行构建。
-        platforms = ([*PLATFORMS, TERMINAL_PLATFORM] if supported else list(PLATFORMS)) if affected else []
-    else:
-        platforms = [selected]
+    if product == 'terminal' and not terminal_supported(source):
+        # 旧固定源码没有手持入口：自动派发只完成规划不构建，显式指定则明确失败。
+        if selected != 'changed':
+            raise ValueError('固定源码尚不支持手持终端构建')
+        hit = False
+    platforms = ([selected] if selected in PRODUCTS[product] else list(PRODUCTS[product])) if hit else []
     value = source.make_plan(ROOT)
     # 仅允许既有协议中的版本和摘要进入公开 job 输出。
     keys = ('schema', 'repository', 'sourceSHA', 'sourceTreeSHA', 'sourceRevision', 'version', 'buildNumber', 'softwareVersion')
