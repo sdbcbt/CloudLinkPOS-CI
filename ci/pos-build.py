@@ -1,4 +1,5 @@
 """在公开执行器静默构建私库收银端，仅发布安装包和版本摘要。"""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import importlib.util
+import zipfile
 
 ROOT = Path('source').resolve()
 STAGE = '初始化'
@@ -20,6 +22,31 @@ PRODUCTS = {'pos': PLATFORMS, 'terminal': (TERMINAL_PLATFORM,)}
 TERMINAL_PACKAGE = 'com.cloudlinkpos.terminal'
 TERMINAL_ENTRY = 'lib/main_terminal.dart'
 ANDROID_SIGNER_CERT_SHA256 = 'b118b7c8f118d1c8b1c1115856615ee7ae1076022049a2c71f9190901a7c7d9e'
+# 手持 Android 5.1（API 22／armeabi-v7a）隔离工具链：固定源码同时带有工具链清单与构建脚本才启用，
+# 缺少新声明的旧固定源码继续走 Flutter 3.44 路径；Windows 与横屏 Android 始终不改工具链。
+TERMINAL_TOOLCHAIN = 'dev/packaging/terminal-android/toolchain.json'
+TERMINAL_BUILDER = 'dev/packaging/build_terminal_android.py'
+TERMINAL_MIN_SDK = 22
+TERMINAL_ABI = 'armeabi-v7a'
+# 公开 CI 自持的官方 Flutter 发行摘要（releases_linux.json）；私库清单只能选择此表中的版本，
+# 归档地址与 SHA-256 不由私库提供，修订或 Dart 版本不一致即停止。
+TERMINAL_FLUTTER = {
+    '3.32.8': {
+        'frameworkRevision': 'edada7c56edf4a183c1735310e123c7f923584f1',
+        'engineRevision': 'ef0cd000916d64fa0c5d09cc809fa7ad244a5767',
+        'dartSdkVersion': '3.8.1',
+        'archive': 'https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.32.8-stable.tar.xz',
+        'sha256': 'c2c7d75f9be53f10f3fdba2f7e042b2ef0852cc088392b374bcec34c6204ed8c',
+        # NDK 只经 Android SDK 官方 sdkmanager 安装（按官方仓库清单校验归档摘要），用于 API 22 原生符号核验。
+        'ndkVersion': '26.3.11579264',
+    },
+}
+TERMINAL_SDK_DIR = 'cloudlinkpos-terminal-flutter'
+TERMINAL_TEST_WORKSPACE = 'cloudlinkpos-terminal-test'
+TERMINAL_BUILD_WORKSPACE = 'cloudlinkpos-terminal-build'
+TERMINAL_EVIDENCE = 'cloudlinkpos-terminal-evidence.json'
+TERMINAL_TEST_CASES = ('test/terminal', 'test/services/device_information_service_test.dart')
+SIGNING_MARKER = 'cloudlinkpos-signing-owner.json'
 
 
 class BuildFailure(RuntimeError):
@@ -29,8 +56,8 @@ class BuildFailure(RuntimeError):
         self.category = category if category in ('dependency_resolution', 'r8_missing_classes', 'compilation', 'signing', 'unknown') else 'unknown'
 
 
-def run(args, cwd=ROOT, env=None):
-    result = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(args, cwd=None, env=None):
+    result = subprocess.run(args, cwd=ROOT if cwd is None else cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
         save_failure_log(result.stdout or b'', result.stderr or b'')
         # 只保留退出码与固定类别，不把命令、私库输出或凭据带入异常。
@@ -153,10 +180,105 @@ def prepare():
             stream.write(f'{key}={item}\n')
 
 
-def flutter(*args):
+def flutter_executable():
+    # 手持隔离工具链明确使用已核验的 SDK 路径；其他平台沿用 PATH 中的固定 3.44。
     # Windows SDK 使用其批处理入口，参数来自固定阶段与已校验版本计划。
-    executable = 'flutter.bat' if os.name == 'nt' else 'flutter'
-    run([executable, '--suppress-analytics', *args], ROOT / 'apps/pos')
+    return os.environ.get('POS_FLUTTER_BIN') or ('flutter.bat' if os.name == 'nt' else 'flutter')
+
+
+def flutter(*args, cwd=None, env=None):
+    run([flutter_executable(), '--suppress-analytics', *args], ROOT / 'apps/pos' if cwd is None else cwd, env)
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for block in iter(lambda: stream.read(1 << 20), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def terminal_toolchain():
+    """仅终端矩阵：返回固定源码声明、且与公开 CI 官方摘要白名单一致的 API 22 工具链；未声明返回 None。"""
+    global SUBSTAGE
+    if os.environ.get('RELEASE_PLATFORM') != TERMINAL_PLATFORM:
+        return None
+    manifest, builder = ROOT / TERMINAL_TOOLCHAIN, ROOT / TERMINAL_BUILDER
+    present = [path.exists() or path.is_symlink() for path in (manifest, builder)]
+    if not any(present):
+        return None
+    SUBSTAGE = 'toolchain.declaration'
+    if not all(path.is_file() and not path.is_symlink() for path in (manifest, builder)):
+        raise ValueError('手持隔离工具链声明不完整')
+    declared = module('build_terminal_android', builder).load_toolchain(manifest)
+    flutter_info, android_info = declared.get('flutter') or {}, declared.get('android') or {}
+    pinned = TERMINAL_FLUTTER.get(flutter_info.get('version'))
+    if pinned is None or any(flutter_info.get(key) != pinned[key] for key in ('frameworkRevision', 'engineRevision', 'dartSdkVersion')):
+        raise ValueError('手持 Flutter 版本不在公开 CI 官方摘要白名单')
+    expected = {'packageName': TERMINAL_PACKAGE, 'minSdk': TERMINAL_MIN_SDK, 'requiredAbi': TERMINAL_ABI, 'ndkVersion': pinned['ndkVersion']}
+    if any(android_info.get(key) != value for key, value in expected.items()) or declared.get('entry') != TERMINAL_ENTRY:
+        raise ValueError('手持工具链目标与公开 CI 约定不一致')
+    return dict(pinned, version=flutter_info['version'])
+
+
+def check_flutter_revision(output, chain):
+    # 公开 CI 自行核对实际 SDK，不只依赖私库脚本的同类检查。
+    info = json.loads(output[output.index('{'):])
+    actual = (info.get('frameworkRevision'), info.get('engineRevision'), (info.get('dartSdkVersion') or '').split(' ')[0])
+    if actual != (chain['frameworkRevision'], chain['engineRevision'], chain['dartSdkVersion']):
+        raise ValueError('隔离 Flutter 修订与官方摘要不一致')
+
+
+def ndk_revision(path):
+    text = (path / 'source.properties').read_text(encoding='utf-8')
+    match = re.search(r'^Pkg\.Revision\s*=\s*([0-9.]+)\s*$', text, re.M)
+    return match.group(1) if match else None
+
+
+def install_terminal_toolchain():
+    """下载官方 Flutter 归档并按公开 CI 固定 SHA-256 校验，解压到独立目录；经 sdkmanager 安装对应 NDK。"""
+    global SUBSTAGE
+    chain = terminal_toolchain()
+    if chain is None:
+        raise ValueError('固定源码未声明手持隔离工具链')
+    temporary = Path(os.environ['RUNNER_TEMP'])
+    sdk = temporary / TERMINAL_SDK_DIR
+    archive = temporary / (TERMINAL_SDK_DIR + '.tar.xz')
+    if sdk.exists() or archive.exists():
+        raise ValueError('隔离 Flutter 目录已存在，拒绝混用')
+    SUBSTAGE = 'toolchain.flutter_download'
+    run(['curl', '--fail', '--location', '--retry', '3', '--silent', '--show-error', chain['archive'], '-o', str(archive)], temporary)
+    SUBSTAGE = 'toolchain.flutter_digest'
+    if file_sha256(archive) != chain['sha256']:
+        raise ValueError('Flutter SDK 摘要不匹配')
+    SUBSTAGE = 'toolchain.flutter_extract'
+    sdk.mkdir()
+    run(['tar', '-xf', str(archive), '-C', str(sdk)], temporary)
+    archive.unlink()
+    executable = sdk / 'flutter/bin/flutter'
+    SUBSTAGE = 'toolchain.flutter_revision'
+    check_flutter_revision(run([str(executable), '--version', '--machine', '--suppress-analytics'], temporary).decode(), chain)
+    SUBSTAGE = 'toolchain.ndk'
+    android_home = Path(os.environ['ANDROID_HOME'])
+    run([str(android_home / 'cmdline-tools/latest/bin/sdkmanager'), '--install', 'ndk;' + chain['ndkVersion']], temporary)
+    ndk = android_home / 'ndk' / chain['ndkVersion']
+    if ndk_revision(ndk) != chain['ndkVersion']:
+        raise ValueError('NDK 版本与手持工具链不一致')
+    with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+        stream.write('POS_FLUTTER_BIN=' + str(executable) + '\n')
+        stream.write('POS_TERMINAL_NDK=' + str(ndk) + '\n')
+    with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as stream:
+        stream.write(str(sdk / 'flutter/bin') + '\n')
+    print('手持隔离工具链已核验：Flutter ' + chain['version'] + '，NDK ' + chain['ndkVersion'])
+
+
+def terminal_workspace(name, key_properties=None):
+    # 私库脚本负责复制 apps/pos 并放入手持专用依赖覆盖与锁文件，原目录不改动。
+    builder = module('build_terminal_android', ROOT / TERMINAL_BUILDER)
+    workspace = Path(os.environ['RUNNER_TEMP']) / name
+    if workspace.exists():
+        raise ValueError('手持工作区已存在，拒绝混入旧构建')
+    return builder, builder.prepare_workspace(ROOT, workspace, key_properties)
 
 
 def windows():
@@ -186,7 +308,7 @@ def installer():
     run(['pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script])
 
 
-def verify_android_signature():
+def verify_android_signature(apk=None):
     global SUBSTAGE
     SUBSTAGE = 'android.signing_tools'
     tools = Path(os.environ['ANDROID_HOME']) / 'build-tools'
@@ -194,7 +316,7 @@ def verify_android_signature():
                       key=lambda path: tuple(int(part) for part in path.name.split('.')))
     if not versions:
         raise ValueError('缺少安卓签名验证工具')
-    apk = ROOT / 'apps/pos/build/app/outputs/flutter-apk/app-release.apk'
+    apk = apk or ROOT / 'apps/pos/build/app/outputs/flutter-apk/app-release.apk'
     signature = run([str(versions[-1] / 'apksigner'), 'verify', '--verbose', '--print-certs', str(apk)]).decode()
     SUBSTAGE = 'android.signer_fingerprint'
     try:
@@ -239,10 +361,13 @@ def android():
 
 def terminal_android():
     global SUBSTAGE
+    chain = terminal_toolchain()
     SUBSTAGE = 'android.compile'
     # 手持终端首期只交付安装包：不注入升级信任公钥、不生成 OTA 附件，原生安装器因缺少信任配置保持停用。
     for key in [name for name in os.environ if name.startswith('ORG_GRADLE_PROJECT_')]:
         del os.environ[key]
+    if chain is not None:
+        return terminal_android_api22(chain)
     os.environ['ORG_GRADLE_PROJECT_CLP_APP_VARIANT'] = 'terminal'
     flutter('build', 'apk', '--release', '--no-pub', '-t', TERMINAL_ENTRY,
             '--build-name', os.environ['POS_VERSION'], '--build-number', os.environ['POS_BUILD_NUMBER'],
@@ -254,6 +379,97 @@ def terminal_android():
     verifier = module('verify_android_version', ROOT / 'dev/packaging/verify_android_version.py')
     verifier.verify(badging, os.environ['POS_VERSION'], int(os.environ['POS_BUILD_NUMBER']), TERMINAL_PACKAGE)
     write_android_env(TERMINAL_PACKAGE)
+
+
+def terminal_android_api22(chain):
+    """调用私库 build_terminal_android.py build，传入本轮版本、完整源码 SHA（--source-sha）与既有正式签名；
+    构建后调用其 verify 核验 API 22／armv7／v1 签名／原生符号，再由公开 CI 复核证书、包名、版本与源码身份。"""
+    global SUBSTAGE
+    SUBSTAGE = 'android.compile'
+    key_properties = ROOT / 'apps/pos/android/key.properties'
+    if not key_properties.is_file() or key_properties.is_symlink():
+        raise ValueError('缺少既有正式签名配置')
+    source_sha = os.environ['POS_SOURCE_SHA']
+    if not re.fullmatch('[0-9a-f]{40}', source_sha) or source_sha != os.environ.get('SOURCE_SHA', source_sha):
+        raise ValueError('源码身份与本轮固定提交不一致')
+    executable = flutter_executable()
+    check_flutter_revision(run([executable, '--version', '--machine', '--suppress-analytics']).decode(), chain)
+    temporary = Path(os.environ['RUNNER_TEMP'])
+    workspace = temporary / TERMINAL_BUILD_WORKSPACE
+    if workspace.exists():
+        raise ValueError('手持工作区已存在，拒绝混入旧构建')
+    # 私库脚本自行核对 Flutter 修订、复制隔离工作区并 --enforce-lockfile；输出全部由 run 截留在私有失败日志。
+    run([sys.executable, str(ROOT / TERMINAL_BUILDER), 'build', '--workspace', str(workspace), '--flutter', executable,
+         '--key-properties', str(key_properties), '--build-name', os.environ['POS_VERSION'],
+         '--build-number', os.environ['POS_BUILD_NUMBER'], '--source-sha', source_sha])
+    app = workspace / 'apps/pos'
+    apk = app / 'build/app/outputs/flutter-apk/app-release.apk'
+    tools, apk = verify_android_signature(apk)
+    SUBSTAGE = 'android.api22'
+    evidence_path = temporary / TERMINAL_EVIDENCE
+    run([sys.executable, str(ROOT / TERMINAL_BUILDER), 'verify', '--apk', str(apk), '--build-tools', str(tools),
+         '--ndk', os.environ['POS_TERMINAL_NDK'], '--workdir', str(temporary / 'cloudlinkpos-terminal-symbols'),
+         '--evidence', str(evidence_path)])
+    evidence = json.loads(evidence_path.read_text(encoding='utf-8'))
+    try:
+        check_terminal_evidence(evidence, apk, chain)
+        check_embedded_source(apk, source_sha)
+    except ValueError:
+        save_failure_log(json.dumps(evidence, ensure_ascii=False).encode('utf-8'), b'')
+        raise
+    SUBSTAGE = 'android.version'
+    badging = run([str(tools / 'aapt'), 'dump', 'badging', str(apk)]).decode()
+    verify_package(badging, TERMINAL_PACKAGE)
+    verifier = module('verify_android_version', ROOT / 'dev/packaging/verify_android_version.py')
+    verifier.verify(badging, os.environ['POS_VERSION'], int(os.environ['POS_BUILD_NUMBER']), TERMINAL_PACKAGE)
+    write_android_env(TERMINAL_PACKAGE)
+    # 仅输出公开安装包本身即可得到的白名单摘要，作为联迪真机验收核对来源。
+    print('手持 API 22 安装包核验：' + json.dumps({key: evidence[key] for key in (
+        'apkSHA256', 'packageName', 'versionName', 'versionCode', 'minSdk', 'signerCertSHA256', 'v1Signature')}, ensure_ascii=False)
+        + '；abi=' + TERMINAL_ABI + '；flutter=' + chain['version'])
+
+
+def check_terminal_evidence(evidence, apk, chain):
+    # 私库 verify 产出的证据逐项与本轮计划、固定正式证书和 API 22 目标比对。
+    libs = evidence.get('nativeLibs') or []
+    checks = [
+        evidence.get('schema') == 'cloudlinkpos.terminal-android-evidence/v1',
+        evidence.get('apkSHA256') == file_sha256(apk),
+        evidence.get('packageName') == TERMINAL_PACKAGE,
+        evidence.get('versionName') == os.environ['POS_VERSION'],
+        evidence.get('versionCode') == str(os.environ['POS_BUILD_NUMBER']),
+        type(evidence.get('minSdk')) is int and evidence['minSdk'] == TERMINAL_MIN_SDK,
+        evidence.get('v1Signature') is True,
+        evidence.get('signerCertSHA256') == ANDROID_SIGNER_CERT_SHA256,
+        all(f'lib/{TERMINAL_ABI}/{name}' in libs for name in ('libflutter.so', 'libapp.so')),
+        bool(evidence.get('symbolCheckedLibs')),
+        (evidence.get('flutter') or {}).get('frameworkRevision') == chain['frameworkRevision'],
+    ]
+    if not all(checks):
+        raise ValueError('手持 API 22 核验证据与本轮构建不一致')
+
+
+def check_embedded_source(apk, source_sha):
+    # POS_SOURCE_SHA 以 --dart-define 编入 AOT 快照，软件内“版本信息”显示该值；在 armv7 libapp.so 中逐字核对。
+    with zipfile.ZipFile(apk) as archive:
+        snapshot = archive.read(f'lib/{TERMINAL_ABI}/libapp.so')
+    if source_sha.encode('ascii') not in snapshot:
+        raise ValueError('手持 API 22 核验证据缺少本轮源码身份')
+
+
+def cleanup_terminal_workspace():
+    # 私库脚本复制进隔离工作区的 key.properties 只按签名所有权标记的摘要删除，变更或链接即拒绝。
+    temporary = os.environ.get('RUNNER_TEMP')
+    if not temporary:
+        return
+    copy = Path(temporary) / TERMINAL_BUILD_WORKSPACE / 'apps/pos/android/key.properties'
+    if not copy.exists() and not copy.is_symlink():
+        return
+    marker = Path(temporary) / SIGNING_MARKER
+    digest = json.loads(marker.read_text(encoding='utf-8')).get(str(ROOT / 'apps/pos/android/key.properties')) if marker.is_file() else None
+    if copy.is_symlink() or digest is None or file_sha256(copy) != digest:
+        raise ValueError('手持工作区签名副本已变更，拒绝清理其他内容')
+    copy.unlink()
 
 
 def verify_package(badging, expected):
@@ -288,11 +504,19 @@ def main(command):
     elif command == 'test':
         SUBSTAGE = 'test.python_packaging'
         run([sys.executable, '-m', 'unittest', 'discover', '-s', 'dev/packaging', '-p', 'test_*.py'])
+        chain = terminal_toolchain()
         SUBSTAGE = 'test.flutter_pub_get'
+        if chain is not None:
+            # 隔离工具链只能按手持专用锁文件解析，测试在单独工作区进行，不改 apps/pos。
+            _, app = terminal_workspace(TERMINAL_TEST_WORKSPACE)
+            flutter('pub', 'get', '--enforce-lockfile', cwd=app)
+            SUBSTAGE = 'test.flutter_cases'
+            flutter('test', '--no-pub', *TERMINAL_TEST_CASES, cwd=app)
+            return
         flutter('pub', 'get', '--enforce-lockfile')
         SUBSTAGE = 'test.flutter_cases'
         if os.environ.get('RELEASE_PLATFORM') == TERMINAL_PLATFORM:
-            flutter('test', '--no-pub', 'test/terminal', 'test/services/device_information_service_test.dart')
+            flutter('test', '--no-pub', *TERMINAL_TEST_CASES)
         else:
             flutter('test', '--no-pub', 'test/hardware/keyboard_service_test.dart', 'test/services/device_information_service_test.dart')
     elif command == 'signing':
@@ -305,6 +529,14 @@ def main(command):
         windows()
     elif command == 'installer':
         installer()
+    elif command == 'toolchain':
+        # 只输出固定模式，不输出私库清单内容。
+        mode = 'api22' if terminal_toolchain() is not None else 'default'
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+            stream.write('mode=' + mode + '\n')
+        print('安卓工具链模式：' + mode)
+    elif command == 'terminal-toolchain':
+        install_terminal_toolchain()
     elif command == 'android':
         android()
     elif command == TERMINAL_PLATFORM:
@@ -314,12 +546,18 @@ def main(command):
         if platform not in TARGETS:
             raise ValueError('构建平台无效')
         source = 'windows-output' if platform == 'windows' else 'apps/pos/build/app/outputs/flutter-apk'
+        if terminal_toolchain() is not None:
+            source = str(Path(os.environ['RUNNER_TEMP']) / TERMINAL_BUILD_WORKSPACE / 'apps/pos/build/app/outputs/flutter-apk')
         run([sys.executable, 'dev/packaging/pos_release.py', 'package', '--platform', platform, '--input', source])
     elif command == 'publish':
         run([sys.executable, 'dev/packaging/pos_release.py', 'publish', '--platform', os.environ['RELEASE_PLATFORM']])
         print('安装包和 SHA-256 已核验并发布至 https://github.com/sdbcbt/CloudLinkPOS-CI/releases')
     elif command == 'cleanup':
-        run([sys.executable, 'dev/packaging/prepare_android_signing.py', '--cleanup'])
+        # 先删手持工作区签名副本，无论成败都继续执行既有签名清理，再报告首个错误。
+        try:
+            cleanup_terminal_workspace()
+        finally:
+            run([sys.executable, 'dev/packaging/prepare_android_signing.py', '--cleanup'])
     else:
         raise ValueError('未知构建阶段')
 

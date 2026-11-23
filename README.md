@@ -37,6 +37,18 @@ Release 标签指向公开 CI 的构建配置提交；安装包版本、附件�
 
 **手持 POS（terminal-android）**：只在 `build-terminal-release.yml` 的独立运行中构建，要求固定源码的 `dev/packaging/pos_release.py` 在 `PLATFORMS` 声明 `terminal-android` 且存在 `apps/pos/lib/main_terminal.dart`。该目标以 `-t lib/main_terminal.dart` 与 Gradle 属性 `CLP_APP_VARIANT=terminal` 构建 release APK，复用同一把正式签名，核验证书 SHA-256、`versionName`/`versionCode` 及包名 `com.cloudlinkpos.terminal`，发布为独立的永久 Release，标签 `terminal-android-v软件版本.源码SHA前12位`，附件为 `CloudLinkPOS-terminal-android-v版本-b构建号-SHA.apk`、`release-manifest.json`（含 `packageName` 与 `signerCertSHA256`）及 `SHA256SUMS.txt`。首期只交付安装包：不注入升级信任公钥与发布私钥，不生成 OTA 附件；失败详情写入私库 `terminal-android-build-failure` 检查。版本管理、OTA 与联迪真机验证留待后续。
 
+**手持 POS Android 5.1（API 22／armeabi-v7a）隔离工具链**：仅终端矩阵、且固定源码同时含有 `dev/packaging/terminal-android/toolchain.json` 与 `dev/packaging/build_terminal_android.py` 时启用（`pos-build.py toolchain` 输出 `api22`）；缺少新声明的旧固定源码继续走现有 Flutter 3.44 路径，Windows 与横屏 Android 不改工具链，两个入口工作流仍独立。
+
+- 工具链：私库清单只能选择公开 CI 白名单中的 Flutter 3.32.8（框架/引擎修订、Dart 3.8.1 逐项一致），官方归档地址与 SHA-256（`c2c7d75f…ed8c`，来自 `releases_linux.json`）由公开 CI 持有；校验后解压到 Runner 临时目录的独立 SDK，再核对 `flutter --version --machine`。NDK `26.3.11579264` 只经 Android SDK 官方 `sdkmanager` 安装并核对 `Pkg.Revision`。包名、`minSdk=22`、`armeabi-v7a`、入口与 NDK 版本不符即停止。
+- 测试：按手持专用锁文件在独立工作区 `pub get --enforce-lockfile` 后运行 `test/terminal`，不改 `apps/pos`。
+- 构建：调用私库 `build_terminal_android.py build --workspace … --flutter <隔离 SDK> --key-properties <既有正式签名> --build-name <本轮版本> --build-number <本轮构建号> --source-sha <完整私库 SHA>`；源码 SHA 须为 40 位小写并等于本轮 `source_sha`。
+- 核验：先用既有 apksigner 规则核对唯一正式证书，再调用私库 `verify --ndk`（包名、minSdk 22、armv7 原生库、v1 签名、API 22 原生符号），公开 CI 逐项复核证据中的 APK SHA-256、版本、证书与 v1，在 armv7 `libapp.so` 中核对本轮源码 SHA，并沿用 `verify_android_version.py` 与包名检查；之后照旧打包为 `terminal-android-v…` 永久 Release。公开日志只打印安装包本身可得的白名单摘要（APK SHA-256、包名、版本、minSdk、证书、v1）。
+- 清理：隔离工作区里的 `key.properties` 副本按签名所有权标记的摘要删除，变更或链接即拒绝；无论成败都继续执行既有签名清理。失败输出仍只进 `0600` 首个失败日志并回写私库 `terminal-android-build-failure`。
+- 发布顺序：先合并本公开 CI 变更（旧固定源码无工具链声明，行为不变），再合并私库带 `--source-sha` 的 #492；#492 合并后第一个手持运行即产出 API 22 正式包。`b4b6b96` 的构建脚本尚无 `--source-sha`，若以该提交构建会在 `android.compile` 明确失败，而不会产出缺少源码身份的安装包。
+- 联迪真机验收：只使用本仓库 Releases 中 `terminal-android-v<版本>.<源码SHA前12位>` 的 `CloudLinkPOS-terminal-android-…apk`，以同一 Release 的 `SHA256SUMS.txt`、`release-manifest.json`（`sourceSHA`、`packageName`、`signerCertSHA256`）及运行日志中的「手持 API 22 安装包核验」摘要对照；在 A8（Android 5.1.1）上 `adb install`、冷启动、在“版本信息”核对完整源码 SHA 与构建号。不得使用本地或一次性密钥构建的 APK 作为验收证据。
+
+离线测试：`python3 ci/pos-build_test.py` 中 `TerminalApi22Tests`、`Api22WorkflowTests` 覆盖模式判定、白名单、摘要/修订/NDK 不符、`--source-sha` 与版本参数、证据比对、源码身份嵌入、隔离测试/打包目录、签名副本清理与日志隔离。
+
 Android 需要在本公开仓库配置固定正式签名的 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_PASSWORD`、`ANDROID_KEY_ALIAS`。缺失时该平台明确失败，不生成临时签名或使用 debug 签名；Windows 独立继续。客户端使用单独的工作流运行，避免 Android 签名失败改变后端镜像收据的最终状态。构建成功不代表真机 UI、OTA 或外设验收。
 
 离线边界检查：安装固定 `PyYAML==6.0.2` 后分别运行 `python3 ci/pos-build_test.py` 与 `python3 ci/report-pos-failure_test.py`。测试覆盖触发范围、main 限制、版本元数据白名单、私库日志隔离、失败详情脱敏及工作流权限。
