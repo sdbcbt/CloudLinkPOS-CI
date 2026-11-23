@@ -16,7 +16,8 @@ spec.loader.exec_module(build)
 class ScopeTests(unittest.TestCase):
     def test_only_pos_and_packaging_paths_select_client_builds(self):
         for path in ['apps/pos/lib/main.dart', 'dev/packaging/pos_release.py',
-                     'dev/development/build-pos-windows.ps1', '.github/workflows/build-pos-release.yml']:
+                     'dev/development/build-pos-windows.ps1', '.github/workflows/build-pos-release.yml',
+                     '.github/workflows/build-terminal-release.yml']:
             with self.subTest(path=path):
                 self.assertTrue(build.changed([path]))
         for path in ['apps/backend/go.mod', 'apps/admin/package.json', 'README.md', 'docs/pos.md',
@@ -31,7 +32,7 @@ class ScopeTests(unittest.TestCase):
             'version': '1.0.17', 'buildNumber': 17, 'softwareVersion': '1.0.17+17', 'privateField': 'never public'}
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / 'out'
-            env = {'BUILD_PLATFORM': 'changed', 'SOURCE_SHA': 'b' * 40, 'SOURCE_BEFORE_SHA': 'a' * 40, 'GITHUB_OUTPUT': str(output)}
+            env = {'BUILD_PRODUCT': 'pos', 'BUILD_PLATFORM': 'changed', 'SOURCE_SHA': 'b' * 40, 'SOURCE_BEFORE_SHA': 'a' * 40, 'GITHUB_OUTPUT': str(output)}
             with patch.dict(os.environ, env), patch.object(build, 'module', return_value=fake), \
                     patch.object(build, 'run', side_effect=[('b' * 40 + '\n' + 'a' * 40).encode(), b'docs/plan.md\n']):
                 build.plan()
@@ -43,7 +44,7 @@ class ScopeTests(unittest.TestCase):
 
     def test_push_baseline_cannot_be_missing_or_non_main_history(self):
         for before in ['', 'bad', '0' * 40, 'a' * 40]:
-            with self.subTest(before=before), patch.dict(os.environ, {'BUILD_PLATFORM': 'changed', 'SOURCE_SHA': 'b' * 40, 'SOURCE_BEFORE_SHA': before}), \
+            with self.subTest(before=before), patch.dict(os.environ, {'BUILD_PRODUCT': 'pos', 'BUILD_PLATFORM': 'changed', 'SOURCE_SHA': 'b' * 40, 'SOURCE_BEFORE_SHA': before}), \
                     patch.object(build, 'run', return_value=('b' * 40).encode()), self.assertRaises(ValueError):
                 build.plan()
 
@@ -135,7 +136,7 @@ class EncodingTests(unittest.TestCase):
 
     def test_workflow_utf8_environment_keeps_successful_checkout_successful(self):
         import yaml
-        workflow = Path(__file__).resolve().parents[1] / '.github/workflows/build-pos-release.yml'
+        workflow = Path(__file__).resolve().parents[1] / '.github/workflows/client-release.yml'
         environment = yaml.safe_load(workflow.read_text(encoding='utf-8'))['env']
         result = self.successful_checkout(environment)
         self.assertEqual(result.returncode, 0)
@@ -277,48 +278,117 @@ def fake_source(platforms=None):
     return fake
 
 
-class TerminalPlanTests(unittest.TestCase):
-    def planned(self, selected, source, entry=True, paths=b'apps/pos/lib/main_terminal.dart\n'):
+class FakeScope:
+    """模拟新源码 dev/packaging/client_scope.py：按固定表返回受影响产品。"""
+    TABLE = {
+        'apps/pos/lib/features/terminal/a.dart': ['terminal'],
+        'apps/pos/lib/features/cashier/a.dart': ['pos'],
+        'apps/pos/lib/shared/a.dart': ['pos', 'terminal'],
+    }
+
+    def __init__(self):
+        self.calls = []
+
+    def scopes(self, root, paths):
+        self.calls.append((root, list(paths)))
+        return sorted({item for path in paths for item in self.TABLE.get(path, [])})
+
+
+class ProductPlanTests(unittest.TestCase):
+    def planned(self, product, selected, source, entry=True, scope=None, paths=b'apps/pos/lib/shared/a.dart\n'):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / 'source'
             (root / 'apps/pos/lib').mkdir(parents=True)
+            (root / 'dev/packaging').mkdir(parents=True)
             if entry:
                 (root / 'apps/pos/lib/main_terminal.dart').write_text('void main() {}\n')
+            if scope is not None:
+                (root / 'dev/packaging/client_scope.py').write_text('# synthetic\n')
             output = Path(folder) / 'out'
-            env = {'BUILD_PLATFORM': selected, 'SOURCE_SHA': 'b' * 40, 'SOURCE_BEFORE_SHA': 'a' * 40, 'GITHUB_OUTPUT': str(output)}
+            env = {'BUILD_PRODUCT': product, 'BUILD_PLATFORM': selected, 'SOURCE_SHA': 'b' * 40,
+                   'SOURCE_BEFORE_SHA': 'a' * 40, 'GITHUB_OUTPUT': str(output)}
             history = ('b' * 40 + '\n' + 'a' * 40).encode()
-            with patch.object(build, 'ROOT', root), patch.dict(os.environ, env), patch.object(build, 'module', return_value=source), \
+            modules = lambda name, path: scope if name == 'client_scope' else source
+            with patch.object(build, 'ROOT', root), patch.dict(os.environ, env), patch.object(build, 'module', side_effect=modules), \
                     patch.object(build, 'run', side_effect=[history, paths]):
                 build.plan()
             result = dict(line.split('=', 1) for line in output.read_text().splitlines())
             return json.loads(result['matrix'])['platform']
 
-    def test_supported_source_adds_independent_terminal_target_on_pos_changes(self):
+    def test_products_never_share_a_run(self):
         supported = fake_source(('windows', 'android', 'terminal-android'))
-        for path in [b'apps/pos/lib/main_terminal.dart\n', b'dev/packaging/pos_release.py\n', b'apps/pos/lib/main.dart\n']:
-            with self.subTest(path=path):
-                self.assertEqual(self.planned('changed', supported, paths=path), ['windows', 'android', 'terminal-android'])
-        self.assertEqual(self.planned('changed', supported, paths=b'apps/backend/go.mod\n'), [])
-        self.assertEqual(self.planned('all', supported), ['windows', 'android', 'terminal-android'])
-        self.assertEqual(self.planned('terminal-android', supported), ['terminal-android'])
-        self.assertEqual(self.planned('android', supported), ['android'])
+        for product, expected in [('pos', ['windows', 'android']), ('terminal', ['terminal-android'])]:
+            with self.subTest(product=product):
+                self.assertEqual(self.planned(product, 'all', supported), expected)
+                self.assertEqual(self.planned(product, 'changed', supported, scope=FakeScope()), expected)
+        self.assertEqual(self.planned('pos', 'android', supported), ['android'])
+        self.assertEqual(self.planned('terminal', 'terminal-android', supported), ['terminal-android'])
 
-    def test_legacy_source_keeps_existing_pos_targets_only(self):
+    def test_three_trigger_kinds_use_source_scope(self):
+        supported = fake_source(('windows', 'android', 'terminal-android'))
+        cases = [
+            (b'apps/pos/lib/features/terminal/a.dart\n', [], ['terminal-android']),
+            (b'apps/pos/lib/features/cashier/a.dart\n', ['windows', 'android'], []),
+            (b'apps/pos/lib/shared/a.dart\n', ['windows', 'android'], ['terminal-android']),
+            (b'apps/backend/go.mod\n', [], []),
+        ]
+        for paths, pos, terminal in cases:
+            with self.subTest(paths=paths):
+                scope = FakeScope()
+                self.assertEqual(self.planned('pos', 'changed', supported, scope=scope, paths=paths), pos)
+                self.assertEqual(self.planned('terminal', 'changed', supported, scope=scope, paths=paths), terminal)
+                self.assertEqual([call[1] for call in scope.calls], [[paths.decode().strip()]] * 2)
+
+    def test_legacy_source_without_scope_module_keeps_safe_path_rule(self):
+        supported = fake_source(('windows', 'android', 'terminal-android'))
+        for path in [b'apps/pos/lib/features/terminal/a.dart\n', b'apps/pos/lib/features/cashier/a.dart\n']:
+            with self.subTest(path=path):
+                self.assertEqual(self.planned('pos', 'changed', supported, paths=path), ['windows', 'android'])
+                self.assertEqual(self.planned('terminal', 'changed', supported, paths=path), ['terminal-android'])
+        self.assertEqual(self.planned('terminal', 'changed', supported, paths=b'docs/a.md\n'), [])
+
+    def test_source_without_terminal_support_skips_or_rejects_terminal(self):
         for source, entry in [(fake_source(None), True), (fake_source(('windows', 'android')), True),
                               (fake_source(('windows', 'android', 'terminal-android')), False), (fake_source(['terminal-android']), True)]:
             with self.subTest(platforms=getattr(source, 'PLATFORMS', None), entry=entry):
-                self.assertEqual(self.planned('changed', source, entry=entry), ['windows', 'android'])
-                with self.assertRaisesRegex(ValueError, '尚不支持'):
-                    self.planned('terminal-android', source, entry=entry)
+                self.assertEqual(self.planned('terminal', 'changed', source, entry=entry), [])
+                self.assertEqual(self.planned('pos', 'changed', source, entry=entry), ['windows', 'android'])
+                for selected in ['terminal-android', 'all']:
+                    with self.assertRaisesRegex(ValueError, '尚不支持'):
+                        self.planned('terminal', selected, source, entry=entry)
 
-    def test_workflow_dispatch_offers_terminal_target(self):
+    def test_platform_must_belong_to_product(self):
+        supported = fake_source(('windows', 'android', 'terminal-android'))
+        for product, selected in [('pos', 'terminal-android'), ('terminal', 'android'), ('terminal', 'windows'), ('other', 'all'), ('', 'all')]:
+            with self.subTest(product=product, selected=selected), self.assertRaises(ValueError):
+                self.planned(product, selected, supported)
+
+    def test_entry_workflows_dispatch_one_product_each(self):
         import yaml
         root = Path(__file__).resolve().parents[1]
-        workflow = yaml.safe_load((root / '.github/workflows/build-pos-release.yml').read_text())
-        triggers = workflow[True] if True in workflow else workflow['on']
-        self.assertEqual(triggers['workflow_dispatch']['inputs']['platform']['options'],
-                         ['all', 'windows', 'android', 'terminal-android', 'changed'])
-        self.assertEqual(triggers['workflow_call']['inputs']['platform']['default'], 'changed')
+        expected = {
+            'build-pos-release.yml': ('pos', ['all', 'windows', 'android', 'changed'], 'pos-permanent-releases'),
+            'build-terminal-release.yml': ('terminal', ['terminal-android', 'changed'], 'terminal-permanent-releases'),
+        }
+        for name, (product, options, group) in expected.items():
+            with self.subTest(workflow=name):
+                workflow = yaml.safe_load((root / '.github/workflows' / name).read_text())
+                triggers = workflow[True] if True in workflow else workflow['on']
+                self.assertEqual(set(triggers), {'workflow_dispatch'})
+                self.assertEqual(triggers['workflow_dispatch']['inputs']['platform']['options'], options)
+                self.assertFalse(workflow['permissions'])
+                self.assertEqual(workflow['concurrency'], {'group': group, 'cancel-in-progress': False, 'queue': 'max'})
+                self.assertEqual(list(workflow['jobs']), ['release'])
+                job = workflow['jobs']['release']
+                self.assertEqual(job['uses'], './.github/workflows/client-release.yml')
+                self.assertEqual(job['with']['product'], product)
+                self.assertEqual(job['permissions'], {'contents': 'write'})
+                self.assertEqual(job['secrets'], 'inherit')
+        shared = yaml.safe_load((root / '.github/workflows/client-release.yml').read_text())
+        triggers = shared[True] if True in shared else shared['on']
+        self.assertEqual(set(triggers), {'workflow_call'})
+        plan = next(step for step in shared['jobs']['plan']['steps'] if step.get('id') == 'plan')
+        self.assertEqual(plan['env']['BUILD_PRODUCT'], '${{ inputs.product }}')
 
 
 class TerminalBuildTests(unittest.TestCase):
@@ -436,13 +506,13 @@ class WorkflowTests(unittest.TestCase):
     def test_public_pos_workflow_has_no_source_artifacts_or_write_source_token(self):
         import yaml
         root = Path(__file__).resolve().parents[1]
-        workflow = yaml.safe_load((root / '.github/workflows/build-pos-release.yml').read_text())
+        workflow = yaml.safe_load((root / '.github/workflows/client-release.yml').read_text())
         self.assertFalse(workflow['permissions'])
         self.assertEqual(workflow['env']['PYTHONUTF8'], '1')
         self.assertEqual(workflow['env']['PYTHONIOENCODING'], 'utf-8')
         self.assertEqual(workflow['defaults']['run']['shell'], 'bash')
-        self.assertFalse(workflow['concurrency']['cancel-in-progress'])
-        self.assertEqual(workflow['concurrency']['queue'], 'max')
+        # 并发组放在两个入口工作流，各产品独立排队。
+        self.assertNotIn('concurrency', workflow)
         jobs = workflow['jobs']
         self.assertEqual(jobs['plan']['runs-on'], 'ubuntu-24.04')
         self.assertEqual(jobs['build']['permissions'], {'contents': 'write'})
