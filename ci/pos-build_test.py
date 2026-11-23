@@ -552,8 +552,13 @@ class WorkflowTests(unittest.TestCase):
         terminal = steps['静默构建并核验手持刷卡终端安装包']
         self.assertEqual(terminal['if'], "matrix.platform == 'terminal-android'")
         self.assertEqual(terminal['run'], 'python3 automation/ci/pos-build.py terminal-android')
-        # 手持终端首期不接触升级信任公钥或发布私钥。
-        self.assertNotIn('env', terminal)
+        # 手持升级使用与横屏相同的信任公钥与发布私钥来源。
+        self.assertEqual(terminal['env'], {
+            'POS_UPGRADE_PUBLIC_KEY': '${{ vars.POS_UPGRADE_PUBLIC_KEY }}',
+            'POS_UPGRADE_PERMIT_PUBLIC_KEY': '${{ vars.POS_UPGRADE_PERMIT_PUBLIC_KEY }}',
+            'POS_RELEASE_SIGNING_KEY': '${{ secrets.POS_RELEASE_SIGNING_KEY }}',
+        })
+        self.assertEqual(steps['准备安卓签名清单 Go 工具链']['if'], android_like)
         self.assertEqual(steps['静默构建并核验固定正式签名安卓安装包']['if'], "matrix.platform == 'android'")
         main = yaml.safe_load((root / '.github/workflows/private-main.yml').read_text())
         self.assertNotIn('pos', main['jobs'])
@@ -791,6 +796,35 @@ class TerminalApi22Tests(unittest.TestCase):
         written = (self.base / 'env').read_text()
         self.assertIn('POS_ANDROID_SIGNER_CERT_SHA256=' + build.ANDROID_SIGNER_CERT_SHA256, written)
         self.assertIn('POS_ANDROID_PACKAGE_NAME=com.cloudlinkpos.terminal', written)
+
+    def test_api22_terminal_upgrade_assets_when_source_declares_product(self):
+        (self.root / 'dev/packaging/build_android_upgrade.py').write_text(
+            "PRODUCTS = {'pos': (), 'terminal': ()}\n", encoding='utf-8')
+        helper = Mock(PRODUCTS={'pos': (), 'terminal': ()})
+        original = build.module
+
+        def module(name, path):
+            return helper if name == 'build_android_upgrade' else original(name, path)
+
+        with patch.object(build, 'module', side_effect=module):
+            self.assertIs(build.terminal_upgrade_helper(), helper)
+        helper.PRODUCTS = {'pos': ()}
+        with patch.object(build, 'module', side_effect=module):
+            self.assertIsNone(build.terminal_upgrade_helper())
+        (self.root / 'dev/packaging/build_android_upgrade.py').unlink()
+        self.assertIsNone(build.terminal_upgrade_helper())
+
+    def test_api22_build_requests_trust_and_packages_terminal_upgrade(self):
+        helper = Mock()
+        with patch.object(build, 'terminal_upgrade_helper', return_value=helper):
+            invoke, _ = self.build_terminal()
+        calls = [call.args[0] for call in invoke.call_args_list]
+        self.assertEqual(calls[1][-1], '--upgrade-trust')
+        helper.trust_defines.assert_called_once()
+        package = helper.package.call_args
+        self.assertEqual(package.kwargs['product'], 'terminal')
+        self.assertEqual(package.args[0], self.runner / 'cloudlinkpos-terminal-build/apps/pos/build/app/outputs/flutter-apk/app-release.apk')
+        self.assertEqual(build.SUBSTAGE, 'android.upgrade_manifest')
 
     def test_api22_apk_must_embed_this_round_source_sha(self):
         with self.assertRaisesRegex(ValueError, '源码身份'):

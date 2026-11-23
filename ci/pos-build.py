@@ -359,15 +359,30 @@ def android():
     upgrade.package(apk, tools, badging, run=lambda args, **kwargs: run(args, cwd=kwargs['cwd']))
 
 
+def terminal_upgrade_helper():
+    """固定源码的 build_android_upgrade.py 声明 terminal 产品时启用手持自动升级附件；
+    旧固定源码没有该声明，继续只交付安装包，不注入信任公钥、不生成 OTA 附件。"""
+    helper = ROOT / 'dev/packaging/build_android_upgrade.py'
+    if not helper.is_file():
+        return None
+    upgrade = module('build_android_upgrade', helper)
+    products = getattr(upgrade, 'PRODUCTS', None)
+    return upgrade if isinstance(products, dict) and 'terminal' in products else None
+
+
 def terminal_android():
     global SUBSTAGE
     chain = terminal_toolchain()
     SUBSTAGE = 'android.compile'
-    # 手持终端首期只交付安装包：不注入升级信任公钥、不生成 OTA 附件，原生安装器因缺少信任配置保持停用。
+    # 只由私库构建脚本按需注入升级信任配置；不继承任何外部 Gradle 项目属性。
     for key in [name for name in os.environ if name.startswith('ORG_GRADLE_PROJECT_')]:
         del os.environ[key]
     if chain is not None:
-        return terminal_android_api22(chain)
+        upgrade = terminal_upgrade_helper()
+        if upgrade is not None:
+            # 与横屏同一组公钥与正式签名身份；缺任何一项即停止，不产出缺信任配置的正式包。
+            upgrade.trust_defines(os.environ)
+        return terminal_android_api22(chain, upgrade)
     os.environ['ORG_GRADLE_PROJECT_CLP_APP_VARIANT'] = 'terminal'
     flutter('build', 'apk', '--release', '--no-pub', '-t', TERMINAL_ENTRY,
             '--build-name', os.environ['POS_VERSION'], '--build-number', os.environ['POS_BUILD_NUMBER'],
@@ -381,7 +396,7 @@ def terminal_android():
     write_android_env(TERMINAL_PACKAGE)
 
 
-def terminal_android_api22(chain):
+def terminal_android_api22(chain, upgrade=None):
     """调用私库 build_terminal_android.py build，传入本轮版本、完整源码 SHA（--source-sha）与既有正式签名；
     构建后调用其 verify 核验 API 22／armv7／v1 签名／原生符号，再由公开 CI 复核证书、包名、版本与源码身份。"""
     global SUBSTAGE
@@ -401,7 +416,8 @@ def terminal_android_api22(chain):
     # 私库脚本自行核对 Flutter 修订、复制隔离工作区并 --enforce-lockfile；输出全部由 run 截留在私有失败日志。
     run([sys.executable, str(ROOT / TERMINAL_BUILDER), 'build', '--workspace', str(workspace), '--flutter', executable,
          '--key-properties', str(key_properties), '--build-name', os.environ['POS_VERSION'],
-         '--build-number', os.environ['POS_BUILD_NUMBER'], '--source-sha', source_sha])
+         '--build-number', os.environ['POS_BUILD_NUMBER'], '--source-sha', source_sha,
+         *(['--upgrade-trust'] if upgrade is not None else [])])
     app = workspace / 'apps/pos'
     apk = app / 'build/app/outputs/flutter-apk/app-release.apk'
     tools, apk = verify_android_signature(apk)
@@ -423,6 +439,10 @@ def terminal_android_api22(chain):
     verifier = module('verify_android_version', ROOT / 'dev/packaging/verify_android_version.py')
     verifier.verify(badging, os.environ['POS_VERSION'], int(os.environ['POS_BUILD_NUMBER']), TERMINAL_PACKAGE)
     write_android_env(TERMINAL_PACKAGE)
+    if upgrade is not None:
+        # 同一正式签名 APK 生成 product=terminal、arch=arm 的离线签名清单与升级附件。
+        SUBSTAGE = 'android.upgrade_manifest'
+        upgrade.package(apk, tools, badging, run=lambda args, **kwargs: run(args, cwd=kwargs['cwd']), product='terminal')
     # 仅输出公开安装包本身即可得到的白名单摘要，作为联迪真机验收核对来源。
     print('手持 API 22 安装包核验：' + json.dumps({key: evidence[key] for key in (
         'apkSHA256', 'packageName', 'versionName', 'versionCode', 'minSdk', 'signerCertSHA256', 'v1Signature')}, ensure_ascii=False)
