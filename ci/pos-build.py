@@ -12,6 +12,11 @@ ROOT = Path('source').resolve()
 STAGE = '初始化'
 SUBSTAGE = 'none'
 PLATFORMS = ('windows', 'android')
+# 手持刷卡终端是独立构建目标：同一 apps/pos 包的 lib/main_terminal.dart 入口加 CLP_APP_VARIANT=terminal。
+TERMINAL_PLATFORM = 'terminal-android'
+TARGETS = (*PLATFORMS, TERMINAL_PLATFORM)
+TERMINAL_PACKAGE = 'com.cloudlinkpos.terminal'
+TERMINAL_ENTRY = 'lib/main_terminal.dart'
 ANDROID_SIGNER_CERT_SHA256 = 'b118b7c8f118d1c8b1c1115856615ee7ae1076022049a2c71f9190901a7c7d9e'
 
 
@@ -79,11 +84,17 @@ def changed(paths):
                or path == 'dev/development/build-pos-windows.ps1' for path in paths)
 
 
+def terminal_supported(source):
+    # 兼容旧固定源码：只有私库打包脚本声明 terminal-android 且终端入口存在时才规划手持终端构建。
+    declared = getattr(source, 'PLATFORMS', ())
+    return isinstance(declared, tuple) and TERMINAL_PLATFORM in declared and (ROOT / 'apps/pos' / TERMINAL_ENTRY).is_file()
+
+
 def plan():
     selected = os.environ.get('BUILD_PLATFORM', 'changed')
-    if selected not in ('all', 'changed', *PLATFORMS):
+    if selected not in ('all', 'changed', *TARGETS):
         raise ValueError('构建平台无效')
-    platforms = list(PLATFORMS) if selected in ('all', 'changed') else [selected]
+    affected = True
     if selected == 'changed':
         before = os.environ.get('SOURCE_BEFORE_SHA', '')
         if not re.fullmatch('[0-9a-f]{40}', before) or before == '0' * 40:
@@ -92,9 +103,16 @@ def plan():
         if before not in history:
             raise ValueError('主线推送基线不属于当前提交历史')
         paths = run(['git', 'diff', '--name-only', '--no-renames', before, os.environ['SOURCE_SHA']]).decode().splitlines()
-        if not changed(paths):
-            platforms = []
+        affected = changed(paths)
     source = module('pos_release', ROOT / 'dev/packaging/pos_release.py')
+    supported = terminal_supported(source)
+    if selected == TERMINAL_PLATFORM and not supported:
+        raise ValueError('固定源码尚不支持手持终端构建')
+    if selected in ('all', 'changed'):
+        # 手持终端与收银机共用 apps/pos 与打包路径，范围命中时作为独立矩阵目标并行构建。
+        platforms = ([*PLATFORMS, TERMINAL_PLATFORM] if supported else list(PLATFORMS)) if affected else []
+    else:
+        platforms = [selected]
     value = source.make_plan(ROOT)
     # 仅允许既有协议中的版本和摘要进入公开 job 输出。
     keys = ('schema', 'repository', 'sourceSHA', 'sourceTreeSHA', 'sourceRevision', 'version', 'buildNumber', 'softwareVersion')
@@ -156,19 +174,8 @@ def installer():
     run(['pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script])
 
 
-def android():
+def verify_android_signature():
     global SUBSTAGE
-    SUBSTAGE = 'android.compile'
-    # 兼容尚未包含升级打包入口的旧固定源码，先合并 CI 不会破坏旧版构建。
-    helper = ROOT / 'dev/packaging/build_android_upgrade.py'
-    upgrade = module('build_android_upgrade', helper) if helper.is_file() else None
-    trust = upgrade.trust_defines(os.environ) if upgrade else {}
-    # Gradle 项目属性与 Dart define 使用同一组公钥和正式签名身份。
-    for key, value in trust.items():
-        os.environ['ORG_GRADLE_PROJECT_' + key] = value
-    flutter('build', 'apk', '--release', '--no-pub', '--build-name', os.environ['POS_VERSION'],
-            '--build-number', os.environ['POS_BUILD_NUMBER'], '--dart-define=POS_SOURCE_SHA=' + os.environ['POS_SOURCE_SHA'],
-            *['--dart-define=' + key + '=' + value for key, value in trust.items()])
     SUBSTAGE = 'android.signing_tools'
     tools = Path(os.environ['ANDROID_HOME']) / 'build-tools'
     versions = sorted((path for path in tools.iterdir() if re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', path.name) and (path / 'apksigner').is_file()),
@@ -183,16 +190,66 @@ def android():
     except ValueError:
         save_failure_log(signature.encode('utf-8'), b'')
         raise
+    return versions[-1], apk
+
+
+def write_android_env(package=None):
     with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
         stream.write('POS_ANDROID_SIGNER_CERT_SHA256=' + ANDROID_SIGNER_CERT_SHA256 + '\n')
+        if package:
+            stream.write('POS_ANDROID_PACKAGE_NAME=' + package + '\n')
+
+
+def android():
+    global SUBSTAGE
+    SUBSTAGE = 'android.compile'
+    # 兼容尚未包含升级打包入口的旧固定源码，先合并 CI 不会破坏旧版构建。
+    helper = ROOT / 'dev/packaging/build_android_upgrade.py'
+    upgrade = module('build_android_upgrade', helper) if helper.is_file() else None
+    trust = upgrade.trust_defines(os.environ) if upgrade else {}
+    # Gradle 项目属性与 Dart define 使用同一组公钥和正式签名身份。
+    for key, value in trust.items():
+        os.environ['ORG_GRADLE_PROJECT_' + key] = value
+    flutter('build', 'apk', '--release', '--no-pub', '--build-name', os.environ['POS_VERSION'],
+            '--build-number', os.environ['POS_BUILD_NUMBER'], '--dart-define=POS_SOURCE_SHA=' + os.environ['POS_SOURCE_SHA'],
+            *['--dart-define=' + key + '=' + value for key, value in trust.items()])
+    tools, apk = verify_android_signature()
+    write_android_env()
     SUBSTAGE = 'android.version'
-    badging = run([str(versions[-1] / 'aapt'), 'dump', 'badging', str(apk)]).decode()
+    badging = run([str(tools / 'aapt'), 'dump', 'badging', str(apk)]).decode()
     verifier = module('verify_android_version', ROOT / 'dev/packaging/verify_android_version.py')
     verifier.verify(badging, os.environ['POS_VERSION'], int(os.environ['POS_BUILD_NUMBER']))
     if not upgrade:
         return
     SUBSTAGE = 'android.upgrade_manifest'
-    upgrade.package(apk, versions[-1], badging, run=lambda args, **kwargs: run(args, cwd=kwargs['cwd']))
+    upgrade.package(apk, tools, badging, run=lambda args, **kwargs: run(args, cwd=kwargs['cwd']))
+
+
+def terminal_android():
+    global SUBSTAGE
+    SUBSTAGE = 'android.compile'
+    # 手持终端首期只交付安装包：不注入升级信任公钥、不生成 OTA 附件，原生安装器因缺少信任配置保持停用。
+    for key in [name for name in os.environ if name.startswith('ORG_GRADLE_PROJECT_')]:
+        del os.environ[key]
+    os.environ['ORG_GRADLE_PROJECT_CLP_APP_VARIANT'] = 'terminal'
+    flutter('build', 'apk', '--release', '--no-pub', '-t', TERMINAL_ENTRY,
+            '--build-name', os.environ['POS_VERSION'], '--build-number', os.environ['POS_BUILD_NUMBER'],
+            '--dart-define=POS_SOURCE_SHA=' + os.environ['POS_SOURCE_SHA'])
+    tools, apk = verify_android_signature()
+    SUBSTAGE = 'android.version'
+    badging = run([str(tools / 'aapt'), 'dump', 'badging', str(apk)]).decode()
+    verify_package(badging, TERMINAL_PACKAGE)
+    verifier = module('verify_android_version', ROOT / 'dev/packaging/verify_android_version.py')
+    verifier.verify(badging, os.environ['POS_VERSION'], int(os.environ['POS_BUILD_NUMBER']), TERMINAL_PACKAGE)
+    write_android_env(TERMINAL_PACKAGE)
+
+
+def verify_package(badging, expected):
+    # 公开 CI 自行核对 APK 实际包名，不只依赖私库校验脚本。
+    line = next((item for item in badging.splitlines() if item.startswith('package: ')), '')
+    match = re.match(r"package: name='([^']+)'", line)
+    if not match or match.group(1) != expected:
+        raise ValueError('APK 包名与构建目标不一致')
 
 
 def verify_signer(output):
@@ -222,7 +279,10 @@ def main(command):
         SUBSTAGE = 'test.flutter_pub_get'
         flutter('pub', 'get', '--enforce-lockfile')
         SUBSTAGE = 'test.flutter_cases'
-        flutter('test', '--no-pub', 'test/hardware/keyboard_service_test.dart', 'test/services/device_information_service_test.dart')
+        if os.environ.get('RELEASE_PLATFORM') == TERMINAL_PLATFORM:
+            flutter('test', '--no-pub', 'test/terminal', 'test/services/device_information_service_test.dart')
+        else:
+            flutter('test', '--no-pub', 'test/hardware/keyboard_service_test.dart', 'test/services/device_information_service_test.dart')
     elif command == 'signing':
         required = ('ANDROID_KEYSTORE_BASE64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_PASSWORD', 'ANDROID_KEY_ALIAS')
         if any(not os.environ.get(key) for key in required):
@@ -235,9 +295,11 @@ def main(command):
         installer()
     elif command == 'android':
         android()
+    elif command == TERMINAL_PLATFORM:
+        terminal_android()
     elif command == 'package':
         platform = os.environ['RELEASE_PLATFORM']
-        if platform not in PLATFORMS:
+        if platform not in TARGETS:
             raise ValueError('构建平台无效')
         source = 'windows-output' if platform == 'windows' else 'apps/pos/build/app/outputs/flutter-apk'
         run([sys.executable, 'dev/packaging/pos_release.py', 'package', '--platform', platform, '--input', source])

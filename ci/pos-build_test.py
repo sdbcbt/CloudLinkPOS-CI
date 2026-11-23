@@ -265,6 +265,127 @@ with patch.object(subprocess, 'run', side_effect=results):
         ])
 
 
+def fake_source(platforms=None):
+    fake = Mock()
+    if platforms is not None:
+        fake.PLATFORMS = platforms
+    else:
+        del fake.PLATFORMS
+    fake.make_plan.return_value = {'schema': 'synthetic', 'repository': 'sdbcbt/CloudLinkPOS',
+        'sourceSHA': 'b' * 40, 'sourceTreeSHA': 'c' * 40, 'sourceRevision': 17,
+        'version': '1.0.17', 'buildNumber': 17, 'softwareVersion': '1.0.17+17'}
+    return fake
+
+
+class TerminalPlanTests(unittest.TestCase):
+    def planned(self, selected, source, entry=True, paths=b'apps/pos/lib/main_terminal.dart\n'):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'source'
+            (root / 'apps/pos/lib').mkdir(parents=True)
+            if entry:
+                (root / 'apps/pos/lib/main_terminal.dart').write_text('void main() {}\n')
+            output = Path(folder) / 'out'
+            env = {'BUILD_PLATFORM': selected, 'SOURCE_SHA': 'b' * 40, 'SOURCE_BEFORE_SHA': 'a' * 40, 'GITHUB_OUTPUT': str(output)}
+            history = ('b' * 40 + '\n' + 'a' * 40).encode()
+            with patch.object(build, 'ROOT', root), patch.dict(os.environ, env), patch.object(build, 'module', return_value=source), \
+                    patch.object(build, 'run', side_effect=[history, paths]):
+                build.plan()
+            result = dict(line.split('=', 1) for line in output.read_text().splitlines())
+            return json.loads(result['matrix'])['platform']
+
+    def test_supported_source_adds_independent_terminal_target_on_pos_changes(self):
+        supported = fake_source(('windows', 'android', 'terminal-android'))
+        for path in [b'apps/pos/lib/main_terminal.dart\n', b'dev/packaging/pos_release.py\n', b'apps/pos/lib/main.dart\n']:
+            with self.subTest(path=path):
+                self.assertEqual(self.planned('changed', supported, paths=path), ['windows', 'android', 'terminal-android'])
+        self.assertEqual(self.planned('changed', supported, paths=b'apps/backend/go.mod\n'), [])
+        self.assertEqual(self.planned('all', supported), ['windows', 'android', 'terminal-android'])
+        self.assertEqual(self.planned('terminal-android', supported), ['terminal-android'])
+        self.assertEqual(self.planned('android', supported), ['android'])
+
+    def test_legacy_source_keeps_existing_pos_targets_only(self):
+        for source, entry in [(fake_source(None), True), (fake_source(('windows', 'android')), True),
+                              (fake_source(('windows', 'android', 'terminal-android')), False), (fake_source(['terminal-android']), True)]:
+            with self.subTest(platforms=getattr(source, 'PLATFORMS', None), entry=entry):
+                self.assertEqual(self.planned('changed', source, entry=entry), ['windows', 'android'])
+                with self.assertRaisesRegex(ValueError, '尚不支持'):
+                    self.planned('terminal-android', source, entry=entry)
+
+    def test_workflow_dispatch_offers_terminal_target(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        workflow = yaml.safe_load((root / '.github/workflows/build-pos-release.yml').read_text())
+        triggers = workflow[True] if True in workflow else workflow['on']
+        self.assertEqual(triggers['workflow_dispatch']['inputs']['platform']['options'],
+                         ['all', 'windows', 'android', 'terminal-android', 'changed'])
+        self.assertEqual(triggers['workflow_call']['inputs']['platform']['default'], 'changed')
+
+
+class TerminalBuildTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        tools = self.root / 'sdk/build-tools/35.0.0'
+        tools.mkdir(parents=True)
+        (tools / 'apksigner').touch()
+        self.signature = ('Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n').encode()
+        self.env = {'POS_VERSION': '1.0.2000', 'POS_BUILD_NUMBER': '2000', 'POS_SOURCE_SHA': 'a' * 40,
+                    'ANDROID_HOME': str(self.root / 'sdk'), 'GITHUB_ENV': str(self.root / 'env'),
+                    'ORG_GRADLE_PROJECT_POS_UPGRADE_PUBLIC_KEY': 'must-not-leak-into-terminal'}
+
+    def test_terminal_uses_entry_variant_and_verifies_package_version_and_signer(self):
+        badging = b"package: name='com.cloudlinkpos.terminal' versionCode='2000' versionName='1.0.2000'\n"
+        verifier = Mock()
+        with patch.object(build, 'ROOT', self.root), patch.dict(os.environ, self.env), \
+                patch.object(build, 'module', return_value=verifier) as load, \
+                patch.object(build, 'run', side_effect=[self.signature, badging]), patch.object(build, 'flutter') as flutter:
+            build.terminal_android()
+            self.assertEqual(os.environ['ORG_GRADLE_PROJECT_CLP_APP_VARIANT'], 'terminal')
+            self.assertNotIn('ORG_GRADLE_PROJECT_POS_UPGRADE_PUBLIC_KEY', os.environ)
+        args = flutter.call_args.args
+        self.assertEqual(args[:5], ('build', 'apk', '--release', '--no-pub', '-t'))
+        self.assertEqual(args[5], 'lib/main_terminal.dart')
+        self.assertIn('--dart-define=POS_SOURCE_SHA=' + 'a' * 40, args)
+        self.assertFalse([item for item in args if 'UPGRADE' in item or 'SIMULATOR' in item])
+        load.assert_called_once()
+        verifier.verify.assert_called_once_with(badging.decode(), '1.0.2000', 2000, 'com.cloudlinkpos.terminal')
+        written = (self.root / 'env').read_text()
+        self.assertIn('POS_ANDROID_SIGNER_CERT_SHA256=' + build.ANDROID_SIGNER_CERT_SHA256, written)
+        self.assertIn('POS_ANDROID_PACKAGE_NAME=com.cloudlinkpos.terminal', written)
+        self.assertEqual(build.SUBSTAGE, 'android.version')
+
+    def test_terminal_rejects_pos_package_or_foreign_signer_before_release_env(self):
+        cases = [
+            ('android.version', [self.signature, b"package: name='com.cloudlinkpos.pos' versionCode='2000' versionName='1.0.2000'\n"]),
+            ('android.signer_fingerprint', [self.signature.replace(build.ANDROID_SIGNER_CERT_SHA256.encode(), b'0' * 64)]),
+        ]
+        for stage, results in cases:
+            with self.subTest(stage=stage), patch.object(build, 'ROOT', self.root), patch.dict(os.environ, dict(self.env, RUNNER_TEMP=str(self.root))), \
+                    patch.object(build, 'module') as load, patch.object(build, 'run', side_effect=results), patch.object(build, 'flutter'):
+                with self.assertRaises(ValueError):
+                    build.terminal_android()
+                self.assertEqual(build.SUBSTAGE, stage)
+                load.assert_not_called()
+                self.assertFalse((self.root / 'env').exists())
+
+    def test_terminal_test_phase_runs_terminal_cases(self):
+        env = {'GITHUB_REPOSITORY': 'sdbcbt/CloudLinkPOS-CI', 'GITHUB_REF': 'refs/heads/main', 'RELEASE_PLATFORM': 'terminal-android'}
+        with patch.dict(os.environ, env), patch.object(build, 'run'), patch.object(build, 'flutter') as flutter:
+            build.main('test')
+        self.assertEqual(flutter.call_args.args, ('test', '--no-pub', 'test/terminal', 'test/services/device_information_service_test.dart'))
+
+    def test_terminal_failure_report_and_package_accept_target(self):
+        self.assertIn('terminal-android', build.TARGETS)
+        env = {'GITHUB_REPOSITORY': 'sdbcbt/CloudLinkPOS-CI', 'GITHUB_REF': 'refs/heads/main', 'RELEASE_PLATFORM': 'terminal-android'}
+        with patch.dict(os.environ, env), patch.object(build, 'run') as invoke:
+            build.main('package')
+        self.assertEqual(invoke.call_args.args[0][1:], ['dev/packaging/pos_release.py', 'package', '--platform', 'terminal-android',
+                                                       '--input', 'apps/pos/build/app/outputs/flutter-apk'])
+        with patch.dict(os.environ, dict(env, RELEASE_PLATFORM='linux')), self.assertRaises(ValueError):
+            build.main('package')
+
+
 class SigningTests(unittest.TestCase):
     def test_only_the_fixed_cloudlinkpos_release_certificate_is_accepted(self):
         fixed = 'Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n'
@@ -349,6 +470,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(report['env']['CHECKS_TOKEN'], '${{ steps.failure_auth.outputs.token }}')
         for key in ['ANDROID_KEYSTORE_BASE64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_PASSWORD', 'ANDROID_KEY_ALIAS']:
             self.assertEqual(report['env'][key], '${{ secrets.' + key + ' }}')
+        steps = {step.get('name'): step for step in jobs['build']['steps']}
+        android_like = "matrix.platform == 'android' || matrix.platform == 'terminal-android'"
+        self.assertEqual(steps['准备固定安卓正式签名']['if'], android_like)
+        self.assertEqual(steps['准备安卓固定工具链']['if'], android_like)
+        self.assertEqual(steps['清理安卓签名临时文件']['if'], 'always() && (' + android_like + ')')
+        terminal = steps['静默构建并核验手持刷卡终端安装包']
+        self.assertEqual(terminal['if'], "matrix.platform == 'terminal-android'")
+        self.assertEqual(terminal['run'], 'python3 automation/ci/pos-build.py terminal-android')
+        # 手持终端首期不接触升级信任公钥或发布私钥。
+        self.assertNotIn('env', terminal)
+        self.assertEqual(steps['静默构建并核验固定正式签名安卓安装包']['if'], "matrix.platform == 'android'")
         main = yaml.safe_load((root / '.github/workflows/private-main.yml').read_text())
         self.assertNotIn('pos', main['jobs'])
         self.assertEqual(main['jobs']['build']['uses'], './.github/workflows/full-version-build.yml')

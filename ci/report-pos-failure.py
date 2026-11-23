@@ -14,6 +14,7 @@ MAX_TEXT_BYTES = 24000
 CHECKS = {
     'windows': ('pos-windows-build-failure', 'Windows 收银构建失败详情'),
     'android': ('pos-android-build-failure', 'Android 收银构建失败详情'),
+    'terminal-android': ('terminal-android-build-failure', 'Android 手持刷卡终端构建失败详情'),
 }
 SECRET_KEYS = (
     'ANDROID_KEYSTORE_BASE64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_PASSWORD', 'ANDROID_KEY_ALIAS',

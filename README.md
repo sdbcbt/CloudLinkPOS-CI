@@ -33,6 +33,8 @@ Windows / Android 在本公开仓库的 [收银客户端永久版本构建](http
 
 Release 标签指向公开 CI 的构建配置提交；安装包版本、附件名称、清单与软件内源码 SHA 对应私库固定提交。公开源码 ZIP 只包含 CI 配置，不包含客户端源码。附件上传草稿后核对远端 SHA-256，再公开发布；已有附件不同摘要即失败，绝不覆盖。
 
+**手持刷卡终端（terminal-android）**：固定源码的 `dev/packaging/pos_release.py` 在 `PLATFORMS` 声明 `terminal-android` 且存在 `apps/pos/lib/main_terminal.dart` 时，`changed`/`all` 规划额外增加独立矩阵目标 `terminal-android`，触发路径与收银端相同；旧源码不声明时只构建原有两个平台，可先合并 CI 再合并私库。该目标以 `-t lib/main_terminal.dart` 与 Gradle 属性 `CLP_APP_VARIANT=terminal` 构建 release APK，复用同一把正式签名，核验证书 SHA-256、`versionName`/`versionCode` 及包名 `com.cloudlinkpos.terminal`，发布为独立的永久 Release，标签 `terminal-android-v软件版本.源码SHA前12位`，附件为 `CloudLinkPOS-terminal-android-v版本-b构建号-SHA.apk`、`release-manifest.json`（含 `packageName` 与 `signerCertSHA256`）及 `SHA256SUMS.txt`。首期只交付安装包：不注入升级信任公钥与发布私钥，不生成 OTA 附件；失败详情写入私库 `terminal-android-build-failure` 检查。版本管理、OTA 与联迪真机验证留待后续。
+
 Android 需要在本公开仓库配置固定正式签名的 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_PASSWORD`、`ANDROID_KEY_ALIAS`。缺失时该平台明确失败，不生成临时签名或使用 debug 签名；Windows 独立继续。客户端使用单独的工作流运行，避免 Android 签名失败改变后端镜像收据的最终状态。构建成功不代表真机 UI、OTA 或外设验收。
 
 离线边界检查：安装固定 `PyYAML==6.0.2` 后分别运行 `python3 ci/pos-build_test.py` 与 `python3 ci/report-pos-failure_test.py`。测试覆盖触发范围、main 限制、版本元数据白名单、私库日志隔离、失败详情脱敏及工作流权限。
