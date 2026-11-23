@@ -1,7 +1,7 @@
 name: 手持 POS 永久版本构建
 run-name: 手持 POS Android · ${{ inputs.source_sha }}
 # 只构建手持 POS（terminal-android）：独立运行、独立并发组，复用 client-release.yml 的公共步骤。
-# 首期只交付安装包，不生成 OTA 附件。
+# 固定源码声明手持升级产品时同时生成签名升级附件（product=terminal），否则只交付安装包。
 on:
   workflow_dispatch:
     inputs:
