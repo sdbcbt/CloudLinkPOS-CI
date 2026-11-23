@@ -44,7 +44,8 @@ class FailureReportTests(unittest.TestCase):
         opener.open.return_value.__enter__ = Mock(return_value=Mock(status=201))
         opener.open.return_value.__exit__ = Mock(return_value=False)
         git = subprocess.CompletedProcess([], 0, stdout=(self.sha + '\n').encode(), stderr=b'private git output')
-        for platform, expected_name in [('android', 'pos-android-build-failure'), ('windows', 'pos-windows-build-failure')]:
+        for platform, expected_name in [('android', 'pos-android-build-failure'), ('windows', 'pos-windows-build-failure'),
+                                        ('terminal-android', 'terminal-android-build-failure')]:
             with self.subTest(platform=platform), patch.dict(os.environ, dict(self.env, RELEASE_PLATFORM=platform)), \
                     patch.object(reporter.subprocess, 'run', return_value=git), \
                     patch.object(reporter.urllib.request, 'build_opener', return_value=opener) as make_opener:
