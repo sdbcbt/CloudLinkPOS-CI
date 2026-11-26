@@ -570,6 +570,34 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(main['jobs']['build']['with']['services'], "${{ inputs.services || 'changed' }}")
 
 
+class GradleCacheWorkflowTests(unittest.TestCase):
+    def test_android_jobs_cache_only_relocatable_gradle_dependencies(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        steps = yaml.safe_load((root / '.github/workflows/client-release.yml').read_text())['jobs']['build']['steps']
+        names = [step.get('name') for step in steps]
+        cache = steps[names.index('恢复 Gradle 依赖缓存')]
+        self.assertEqual(cache['if'], "matrix.platform == 'android' || matrix.platform == 'terminal-android'")
+        self.assertEqual(cache['uses'], 'actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830')
+        # 缓存在读取源码与判定工具链之后、任何 Gradle 构建之前恢复。
+        self.assertLess(names.index('静默读取已合并固定源码'), names.index('恢复 Gradle 依赖缓存'))
+        self.assertLess(names.index('判定手持安卓工具链'), names.index('恢复 Gradle 依赖缓存'))
+        self.assertLess(names.index('恢复 Gradle 依赖缓存'), names.index('静默运行打包边界与软件版本测试'))
+        self.assertEqual(set(cache['with']), {'path', 'key', 'restore-keys'})
+        paths = cache['with']['path'].split()
+        self.assertEqual(paths, ['~/.gradle/caches/modules-2/files-2.1', '~/.gradle/caches/modules-2/metadata-*',
+                                 '~/.gradle/wrapper/dists', '!~/.gradle/caches/modules-2/**/*.lock',
+                                 '!~/.gradle/wrapper/dists/**/*.part', '!~/.gradle/wrapper/dists/**/*.lck'])
+        key, restore = cache['with']['key'], cache['with']['restore-keys'].strip()
+        for part in ['matrix.platform', 'steps.toolchain.outputs.mode', "'source/apps/pos/android/gradle/wrapper/gradle-wrapper.properties'",
+                     "'source/apps/pos/android/**/*.gradle.kts'", "'source/apps/pos/pubspec.lock'"]:
+            self.assertIn(part, key)
+        # 回退只允许同一 Gradle 配置哈希：镜像顺序变化后不复用旧解析结果。
+        self.assertTrue(key.startswith(restore))
+        self.assertNotIn('pubspec.lock', restore)
+        self.assertIn('gradle-wrapper.properties', restore)
+
+
 
 TOOLCHAIN = {
     'schema': 'cloudlinkpos.terminal-android-toolchain/v1',
