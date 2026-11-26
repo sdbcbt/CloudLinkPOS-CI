@@ -3,10 +3,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import random
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import importlib.util
 import zipfile
 
@@ -101,6 +104,69 @@ def classify_failure(output):
     return 'unknown'
 
 
+# Gradle 依赖下载遭仓库匿名限流（HTTP 429）时的有限重试：最多 2 次，指数退避加抖动；其他错误一律不重试。
+GRADLE_RETRY_LIMIT = 2
+GRADLE_RETRY_BASE_SECONDS = 30
+GRADLE_RATE_LIMITED = re.compile(rb'received status code 429\b|\bhttp/[0-9.]+ 429\b|\b429 too many requests\b', re.I)
+
+
+def gradle_rate_limited(log):
+    # 只读本阶段刚写入的私有首个失败日志判断，日志内容不进入公开输出。
+    try:
+        return log.is_file() and not log.is_symlink() and GRADLE_RATE_LIMITED.search(log.read_bytes()) is not None
+    except OSError:
+        return False
+
+
+def clear_partial_downloads():
+    # 只删除 Gradle 未完成的下载临时文件与 wrapper 半截发行包，已完成的依赖缓存保留。
+    home = Path(os.environ.get('GRADLE_USER_HOME') or Path.home() / '.gradle')
+    removed = 0
+    for pattern in ('.tmp/gradle_download*', 'caches/modules-2/files-2.1/**/*.part', 'wrapper/dists/*/*/*.part'):
+        for path in home.glob(pattern):
+            if path.is_file() and not path.is_symlink():
+                path.unlink()
+                removed += 1
+    return removed
+
+
+def run_gradle(args, cwd=None, env=None, reset=None):
+    """运行内含 Gradle 依赖解析的构建命令；仅 HTTP 429 限流时清理未完成下载并有限重试。
+    重试前删除本次尝试刚写入的私有失败日志，最终失败仍只保留一份首个失败日志。"""
+    temporary = os.environ.get('RUNNER_TEMP')
+    log = Path(temporary) / 'cloudlinkpos-pos-first-failure.log' if temporary else None
+    for attempt in range(GRADLE_RETRY_LIMIT + 1):
+        existed = log is None or log.exists() or log.is_symlink()
+        try:
+            return run(args, cwd, env)
+        except BuildFailure as failure:
+            failure.retries = attempt
+            if attempt >= GRADLE_RETRY_LIMIT or existed or not gradle_rate_limited(log):
+                raise
+            if reset is not None:
+                try:
+                    reset()
+                except Exception:
+                    raise failure from None
+            log.unlink()
+            removed = clear_partial_downloads()
+            window = GRADLE_RETRY_BASE_SECONDS * 2 ** attempt
+            delay = window + random.uniform(0, window / 2)
+            print(f'Gradle 依赖下载收到 HTTP 429 限流：第 {attempt + 1}/{GRADLE_RETRY_LIMIT} 次重试，'
+                  f'已清理未完成下载 {removed} 个，等待 {delay:.1f} 秒', flush=True)
+            time.sleep(delay)
+
+
+def reset_terminal_build_workspace():
+    # 手持 API 22 重试前按签名所有权标记删除签名副本，再移除本轮隔离工作区，私库脚本重新建立。
+    cleanup_terminal_workspace()
+    workspace = Path(os.environ['RUNNER_TEMP']) / TERMINAL_BUILD_WORKSPACE
+    if workspace.is_symlink():
+        raise ValueError('手持工作区是链接，拒绝清理')
+    if workspace.exists():
+        shutil.rmtree(workspace)
+
+
 def module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     value = importlib.util.module_from_spec(spec)
@@ -186,8 +252,9 @@ def flutter_executable():
     return os.environ.get('POS_FLUTTER_BIN') or ('flutter.bat' if os.name == 'nt' else 'flutter')
 
 
-def flutter(*args, cwd=None, env=None):
-    run([flutter_executable(), '--suppress-analytics', *args], ROOT / 'apps/pos' if cwd is None else cwd, env)
+def flutter(*args, cwd=None, env=None, gradle=False):
+    # gradle=True 的构建内含 Gradle 依赖解析，仅 HTTP 429 限流时有限重试。
+    (run_gradle if gradle else run)([flutter_executable(), '--suppress-analytics', *args], ROOT / 'apps/pos' if cwd is None else cwd, env)
 
 
 def file_sha256(path):
@@ -346,7 +413,7 @@ def android():
         os.environ['ORG_GRADLE_PROJECT_' + key] = value
     flutter('build', 'apk', '--release', '--no-pub', '--build-name', os.environ['POS_VERSION'],
             '--build-number', os.environ['POS_BUILD_NUMBER'], '--dart-define=POS_SOURCE_SHA=' + os.environ['POS_SOURCE_SHA'],
-            *['--dart-define=' + key + '=' + value for key, value in trust.items()])
+            *['--dart-define=' + key + '=' + value for key, value in trust.items()], gradle=True)
     tools, apk = verify_android_signature()
     write_android_env()
     SUBSTAGE = 'android.version'
@@ -386,7 +453,7 @@ def terminal_android():
     os.environ['ORG_GRADLE_PROJECT_CLP_APP_VARIANT'] = 'terminal'
     flutter('build', 'apk', '--release', '--no-pub', '-t', TERMINAL_ENTRY,
             '--build-name', os.environ['POS_VERSION'], '--build-number', os.environ['POS_BUILD_NUMBER'],
-            '--dart-define=POS_SOURCE_SHA=' + os.environ['POS_SOURCE_SHA'])
+            '--dart-define=POS_SOURCE_SHA=' + os.environ['POS_SOURCE_SHA'], gradle=True)
     tools, apk = verify_android_signature()
     SUBSTAGE = 'android.version'
     badging = run([str(tools / 'aapt'), 'dump', 'badging', str(apk)]).decode()
@@ -414,10 +481,10 @@ def terminal_android_api22(chain, upgrade=None):
     if workspace.exists():
         raise ValueError('手持工作区已存在，拒绝混入旧构建')
     # 私库脚本自行核对 Flutter 修订、复制隔离工作区并 --enforce-lockfile；输出全部由 run 截留在私有失败日志。
-    run([sys.executable, str(ROOT / TERMINAL_BUILDER), 'build', '--workspace', str(workspace), '--flutter', executable,
-         '--key-properties', str(key_properties), '--build-name', os.environ['POS_VERSION'],
-         '--build-number', os.environ['POS_BUILD_NUMBER'], '--source-sha', source_sha,
-         *(['--upgrade-trust'] if upgrade is not None else [])])
+    run_gradle([sys.executable, str(ROOT / TERMINAL_BUILDER), 'build', '--workspace', str(workspace), '--flutter', executable,
+                '--key-properties', str(key_properties), '--build-name', os.environ['POS_VERSION'],
+                '--build-number', os.environ['POS_BUILD_NUMBER'], '--source-sha', source_sha,
+                *(['--upgrade-trust'] if upgrade is not None else [])], reset=reset_terminal_build_workspace)
     app = workspace / 'apps/pos'
     apk = app / 'build/app/outputs/flutter-apk/app-release.apk'
     tools, apk = verify_android_signature(apk)

@@ -459,6 +459,143 @@ class TerminalBuildTests(unittest.TestCase):
             build.main('package')
 
 
+RATE_LIMITED = (b"> Could not GET 'https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.0.21/kotlin-stdlib-2.0.21.pom'. "
+                b"Received status code 429 from server: Too Many Requests\n")
+
+
+class GradleRetryTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.runner = self.base / 'runner'
+        self.runner.mkdir()
+        self.gradle = self.base / 'gradle-home'
+        (self.gradle / '.tmp').mkdir(parents=True)
+        self.log = self.runner / 'cloudlinkpos-pos-first-failure.log'
+        self.env = {'RUNNER_TEMP': str(self.runner), 'GRADLE_USER_HOME': str(self.gradle)}
+
+    def results(self, *outputs):
+        # None 代表成功；字节串代表失败输出（由真实 run 写入私有首个失败日志）。
+        return [subprocess.CompletedProcess(['gradle'], 0, stdout=b'ok', stderr=b'') if item is None else
+                subprocess.CompletedProcess(['gradle'], 1, stdout=item, stderr=b'') for item in outputs]
+
+    def invoke(self, outputs, reset=None):
+        printed = []
+        with patch.dict(os.environ, self.env), patch.object(build.subprocess, 'run', side_effect=self.results(*outputs)) as invoke, \
+                patch.object(build.time, 'sleep') as sleep, patch.object(build.random, 'uniform', side_effect=lambda low, high: high) as jitter, \
+                patch('builtins.print', side_effect=lambda *args, **kwargs: printed.append(' '.join(map(str, args)))):
+            try:
+                result, error = build.run_gradle(['gradle'], self.base, reset=reset), None
+            except build.BuildFailure as failure:
+                result, error = None, failure
+        return result, error, invoke, sleep, jitter, printed
+
+    def test_rate_limit_retries_after_clearing_partial_downloads_then_succeeds(self):
+        partial = self.gradle / '.tmp/gradle_download123.bin'
+        partial.write_bytes(b'half')
+        done = self.gradle / 'caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-stdlib/2.0.21/abc/kotlin-stdlib-2.0.21.pom'
+        done.parent.mkdir(parents=True)
+        done.write_bytes(b'complete')
+        unfinished = done.with_name('kotlin-stdlib-2.0.21.jar.part')
+        unfinished.write_bytes(b'half')
+        result, error, invoke, sleep, jitter, printed = self.invoke([RATE_LIMITED, None])
+        self.assertIsNone(error)
+        self.assertEqual(result, b'ok')
+        self.assertEqual(invoke.call_count, 2)
+        jitter.assert_called_once_with(0, 15.0)
+        sleep.assert_called_once_with(45.0)
+        self.assertFalse(partial.exists())
+        self.assertFalse(unfinished.exists())
+        self.assertTrue(done.exists())
+        # 成功后不残留首个失败日志，后续阶段失败时私库检查拿到的是真实首个失败。
+        self.assertFalse(self.log.exists())
+        self.assertEqual(printed, ['Gradle 依赖下载收到 HTTP 429 限流：第 1/2 次重试，已清理未完成下载 2 个，等待 45.0 秒'])
+
+    def test_rate_limit_is_retried_at_most_twice_with_exponential_backoff(self):
+        last = RATE_LIMITED + b'attempt three'
+        _, error, invoke, sleep, jitter, printed = self.invoke([RATE_LIMITED, RATE_LIMITED, last, None])
+        self.assertIsInstance(error, build.BuildFailure)
+        self.assertEqual(error.retries, 2)
+        self.assertEqual(invoke.call_count, 3)
+        self.assertEqual([call.args for call in jitter.call_args_list], [(0, 15.0), (0, 30.0)])
+        self.assertEqual([call.args for call in sleep.call_args_list], [(45.0,), (90.0,)])
+        self.assertEqual(len(printed), 2)
+        self.assertIn('第 2/2 次重试', printed[1])
+        # 最终失败只保留最后一次尝试的私有日志。
+        self.assertIn(b'attempt three', self.log.read_bytes())
+
+    def test_other_failures_are_not_retried(self):
+        for output in [b'Could not resolve all files for configuration\nReceived status code 403 from server: Forbidden',
+                       b'Compilation failed; see the compiler error output', b'Received status code 4290 from proxy']:
+            with self.subTest(output=output):
+                if self.log.exists():
+                    self.log.unlink()
+                _, error, invoke, sleep, _, printed = self.invoke([output, None])
+                self.assertEqual(error.retries, 0)
+                self.assertEqual(invoke.call_count, 1)
+                sleep.assert_not_called()
+                self.assertEqual(printed, [])
+                self.assertTrue(self.log.exists())
+
+    def test_existing_failure_log_or_missing_runner_temp_disables_retry(self):
+        self.log.write_bytes(b'earlier failure')
+        _, error, invoke, sleep, _, _ = self.invoke([RATE_LIMITED, None])
+        self.assertEqual((error.retries, invoke.call_count), (0, 1))
+        sleep.assert_not_called()
+        self.assertEqual(self.log.read_bytes(), b'earlier failure')
+        del self.env['RUNNER_TEMP']
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('RUNNER_TEMP', None)
+            _, error, invoke, sleep, _, _ = self.invoke([RATE_LIMITED, None])
+        self.assertEqual((error.retries, invoke.call_count), (0, 1))
+        sleep.assert_not_called()
+
+    def test_reset_runs_before_retry_and_reset_failure_keeps_original_failure(self):
+        reset = Mock()
+        _, error, _, _, _, _ = self.invoke([RATE_LIMITED, None], reset=reset)
+        self.assertIsNone(error)
+        reset.assert_called_once_with()
+        broken = Mock(side_effect=ValueError('拒绝清理'))
+        _, error, invoke, sleep, _, _ = self.invoke([RATE_LIMITED, None], reset=broken)
+        self.assertEqual((error.retries, invoke.call_count), (0, 1))
+        sleep.assert_not_called()
+        self.assertIn(b'status code 429', self.log.read_bytes())
+
+    def test_only_gradle_build_commands_use_retry(self):
+        signature = b'Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256.encode() + b'\n'
+        root = self.base / 'source'
+        (root / 'sdk/build-tools/35.0.0').mkdir(parents=True)
+        (root / 'sdk/build-tools/35.0.0/apksigner').write_text('')
+        env = {'ANDROID_HOME': str(root / 'sdk'), 'POS_VERSION': '1.0.1', 'POS_BUILD_NUMBER': '1', 'POS_SOURCE_SHA': 'a' * 40,
+               'GITHUB_ENV': str(self.base / 'env'), 'RELEASE_PLATFORM': ''}
+        for command in (build.android, build.terminal_android):
+            with self.subTest(command=command.__name__), patch.dict(os.environ, env), \
+                    patch.object(build, 'ROOT', root), patch.object(build, 'module'), \
+                    patch.object(build, 'run', side_effect=[signature, b"package: name='com.cloudlinkpos.terminal'\n"]), \
+                    patch.object(build, 'run_gradle', side_effect=AssertionError('签名与版本核验不得重试')), \
+                    patch.object(build, 'flutter') as flutter:
+                command()
+                self.assertEqual(flutter.call_args.args[0:2], ('build', 'apk'))
+                self.assertIs(flutter.call_args.kwargs['gradle'], True)
+        with patch.object(build, 'run_gradle') as retry, patch.object(build, 'run') as plain:
+            build.flutter('pub', 'get', '--enforce-lockfile')
+            build.flutter('build', 'apk', gradle=True)
+        self.assertEqual(plain.call_count, 1)
+        self.assertEqual(retry.call_count, 1)
+
+    def test_api22_workspace_reset_removes_owned_signing_copy_and_workspace(self):
+        workspace = self.runner / build.TERMINAL_BUILD_WORKSPACE
+        (workspace / 'apps/pos/android').mkdir(parents=True)
+        with patch.dict(os.environ, self.env), patch.object(build, 'cleanup_terminal_workspace') as cleanup:
+            build.reset_terminal_build_workspace()
+        cleanup.assert_called_once_with()
+        self.assertFalse(workspace.exists())
+        with patch.dict(os.environ, self.env), patch.object(build, 'cleanup_terminal_workspace', side_effect=ValueError('拒绝清理')), \
+                self.assertRaises(ValueError):
+            build.reset_terminal_build_workspace()
+
+
 class SigningTests(unittest.TestCase):
     def test_only_the_fixed_cloudlinkpos_release_certificate_is_accepted(self):
         fixed = 'Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n'
