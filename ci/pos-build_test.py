@@ -803,9 +803,9 @@ class GradleCacheWorkflowTests(unittest.TestCase):
         self.assertLess(names.index('恢复 Gradle 依赖缓存'), names.index('静默运行打包边界与软件版本测试'))
         self.assertEqual(set(cache['with']), {'path', 'key', 'restore-keys'})
         paths = cache['with']['path'].split()
+        # actions/cache 对目录整体递归归档、不支持按文件名排除，所以不写无效的 ! 规则。
         self.assertEqual(paths, ['~/.gradle/caches/modules-2/files-2.1', '~/.gradle/caches/modules-2/metadata-*',
-                                 '~/.gradle/wrapper/dists', '!~/.gradle/caches/modules-2/**/*.lock',
-                                 '!~/.gradle/wrapper/dists/**/*.part', '!~/.gradle/wrapper/dists/**/*.lck'])
+                                 '~/.gradle/wrapper/dists'])
         key, restore = cache['with']['key'], cache['with']['restore-keys'].strip()
         for part in ['matrix.platform', 'steps.toolchain.outputs.mode', "'source/apps/pos/android/gradle/wrapper/gradle-wrapper.properties'",
                      "'source/apps/pos/android/**/*.gradle.kts'", "'source/apps/pos/pubspec.lock'"]:
@@ -814,6 +814,46 @@ class GradleCacheWorkflowTests(unittest.TestCase):
         self.assertTrue(key.startswith(restore))
         self.assertNotIn('pubspec.lock', restore)
         self.assertIn('gradle-wrapper.properties', restore)
+
+    def test_locks_and_partial_downloads_are_deleted_before_cache_is_saved(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        steps = yaml.safe_load((root / '.github/workflows/client-release.yml').read_text())['jobs']['build']['steps']
+        names = [step.get('name') for step in steps]
+        clean = steps[names.index('清理 Gradle 缓存中的锁与未完成下载')]
+        self.assertEqual(clean['if'], "success() && (matrix.platform == 'android' || matrix.platform == 'terminal-android')")
+        self.assertNotIn('${{', clean['run'])
+        self.assertNotIn('env', clean)
+        # 缓存在作业末尾保存：清理位于全部 Gradle 构建与发布之后，失败回写步骤之前。
+        for build_step in ['静默构建并核验固定正式签名安卓安装包', '静默构建并核验手持刷卡终端安装包', '核验并发布公开永久下载附件']:
+            self.assertLess(names.index(build_step), names.index('清理 Gradle 缓存中的锁与未完成下载'))
+        self.assertLess(names.index('清理 Gradle 缓存中的锁与未完成下载'), names.index('检查私有失败日志'))
+        # 用夹具实跑该脚本，证明待归档目录里只剩完整文件。
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            gradle = home / '.gradle'
+            kept = [gradle / 'caches/modules-2/files-2.1/org/x/1.0/abc/x-1.0.pom',
+                    gradle / 'caches/modules-2/metadata-2.107/descriptors/x/descriptor.bin',
+                    gradle / 'wrapper/dists/gradle-8.12-all/hash/gradle-8.12-all.zip',
+                    gradle / 'wrapper/dists/gradle-8.12-all/hash/gradle-8.12-all.zip.ok']
+            removed = [gradle / 'caches/modules-2/metadata-2.107/sample.lock',
+                       gradle / 'caches/modules-2/files-2.1/org/x/1.0/abc/x-1.0.jar.part',
+                       gradle / 'wrapper/dists/gradle-8.12-all/hash/gradle.zip.part',
+                       gradle / 'wrapper/dists/gradle-8.12-all/hash/gradle.zip.lck']
+            outside = gradle / 'caches/modules-2/modules-2.lock'
+            for path in kept + removed + [outside]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('x')
+            result = subprocess.run(['bash', '-c', clean['run']], env=dict(os.environ, HOME=str(home)), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual([path.exists() for path in kept], [True] * len(kept))
+            self.assertEqual([path.exists() for path in removed], [False] * len(removed))
+            # 未缓存的目录不受影响。
+            self.assertTrue(outside.exists())
+            empty = home / 'empty'
+            empty.mkdir()
+            result = subprocess.run(['bash', '-c', clean['run']], env=dict(os.environ, HOME=str(empty)), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 
