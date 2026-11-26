@@ -53,10 +53,10 @@ Android 需要在本公开仓库配置固定正式签名的 `ANDROID_KEYSTORE_BA
 
 **安卓 Gradle 依赖解析健壮性**（横屏收银 Android 与手持 POS 共用，只影响依赖解析与日志）：
 
-- 缓存：安卓作业恢复 `~/.gradle/caches/modules-2` 的 `files-2.1`、`metadata-*` 与 `~/.gradle/wrapper/dists`（排除 `*.lock`、`*.part`、`*.lck`），不缓存构建缓存、转换产物、守护进程等与本机路径相关的状态。key 为平台、工具链模式、`apps/pos/android` 下 Gradle 配置与 wrapper 版本哈希、`pubspec.lock` 哈希；只在同一配置哈希内回退，仓库/镜像顺序变化即不复用，镜像顺序始终由本轮固定源码的 `settings.gradle.kts` 决定。仅成功作业写回。
+- 缓存：安卓作业恢复 `~/.gradle/caches/modules-2` 的 `files-2.1`、`metadata-*` 与 `~/.gradle/wrapper/dists`。actions/cache 对目录整体归档、不能按文件名排除，因此在全部 Gradle 构建与发布之后、作业结束保存缓存之前，由「清理 Gradle 缓存中的锁与未完成下载」步骤删除这些目录下的 `*.lock`、`*.part`、`*.lck`。不缓存构建缓存、转换产物、守护进程等与本机路径相关的状态。key 为平台、工具链模式、`apps/pos/android` 下 Gradle 配置与 wrapper 版本哈希、`pubspec.lock` 哈希；只在同一配置哈希内回退，仓库/镜像顺序变化即不复用，镜像顺序始终由本轮固定源码的 `settings.gradle.kts` 决定。仅成功作业写回。
 - 429 重试：三处 Gradle 构建命令（横屏 `flutter build apk`、手持默认路径、手持 API 22 私库构建脚本）仅在本次失败输出含 HTTP 429 时重试，最多 2 次，等待 `30s×2^n` 加 0–50% 抖动；重试前清理 `~/.gradle/.tmp/gradle_download*` 与 `*.part`，API 22 先按签名所有权标记清理隔离工作区。其他错误不重试。公开日志记录第几次重试、清理数量与等待秒数。
-- 失败摘要：`android.compile` 失败时公开日志额外输出一行「Gradle 构建失败摘要（已脱敏）」，含公开仓库主机名（白名单外记为 `other`）、HTTP 状态码、失败任务/配置路径与重试次数；不含令牌、账号、内网地址、私库地址与输出原文。私库 `*-build-failure` 检查的详细内容不变。
-- 回滚：缓存、重试、摘要各为一个提交，可分别 `git revert`。
+- 失败摘要：`android.compile` 失败时公开日志额外输出一行「Gradle 构建失败摘要（已脱敏）」，含公开仓库主机名（白名单外记为 `other`）、HTTP 状态码、失败任务/配置路径与重试次数。任务/配置路径每段须为以字母或下划线开头的 Gradle 标识符（点号、数字开头及 IP 形态丢弃），并排除含环境密钥值的项；形如合法标识符的名称仍会原样公开，依赖 Gradle 任务名与配置名本身不承载敏感信息。摘要不含令牌、账号、内网地址、私库地址与输出原文。私库 `*-build-failure` 检查的详细内容不变。
+- 回滚（每项可单独回滚，同一项内先回滚后加的修正提交）：缓存 `git revert 167095d 01832af`；重试 `git revert 5ca4649 36a44e1`（单独回滚 `36a44e1` 会与 `5ca4649` 冲突）；摘要 `git revert a2613ac e3d08a9`。squash 合并后只能整体回滚。
 
 离线边界检查：安装固定 `PyYAML==6.0.2` 后分别运行 `python3 ci/pos-build_test.py` 与 `python3 ci/report-pos-failure_test.py`。测试覆盖触发范围、main 限制、版本元数据白名单、私库日志隔离、失败详情脱敏及工作流权限。
 
