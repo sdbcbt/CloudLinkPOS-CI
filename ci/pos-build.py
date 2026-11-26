@@ -579,19 +579,24 @@ def verify_signer(output):
 
 
 # Gradle 失败的公开脱敏摘要：仓库主机名只取公开白名单，其他一律记为 other；HTTP 状态码只取三位数字；
-# 任务与配置路径只保留 Gradle 路径字符。令牌、账号、内网地址、私库地址与输出原文不进入公开日志。
+# 任务与配置路径每段须是以字母或下划线开头的 Gradle 标识符（无点号，IP 形态等直接丢弃），且不得包含
+# 当前环境中名称像密钥的变量值。限制：形如合法标识符的值（例如 :app:SOME_NAME）仍会原样公开，
+# 依赖 Gradle 任务名与配置名本身不承载敏感信息。令牌、账号、内网地址、私库地址与输出原文不进入公开日志。
 PUBLIC_REPOSITORY_HOSTS = frozenset((
     'repo.maven.apache.org', 'repo1.maven.org', 'plugins.gradle.org', 'plugins-artifacts.gradle.org', 'services.gradle.org',
     'maven.google.com', 'dl.google.com', 'maven-central.storage-download.googleapis.com', 'storage.googleapis.com',
     'download.flutter.io', 'jcenter.bintray.com', 'jitpack.io',
 ))
-GRADLE_PATH = re.compile(r'[A-Za-z0-9_.:-]{1,120}')
+GRADLE_SEGMENT = r'[A-Za-z_][A-Za-z0-9_-]{0,63}'
+GRADLE_PATH = re.compile(':?' + GRADLE_SEGMENT + '(?::' + GRADLE_SEGMENT + '){0,7}')
+SECRET_NAME = re.compile(r'KEY|TOKEN|PASSWORD|SECRET|PFX|CREDENTIAL', re.I)
 SUMMARY_LIMIT = 10
 
 
 def gradle_failure_summary(output, retries=0):
     text = output.decode('utf-8', 'replace')
     hosts, statuses, tasks, configurations = set(), set(), [], []
+    secrets = [value for name, value in os.environ.items() if SECRET_NAME.search(name) and len(value) >= 6]
     for line in text.splitlines():
         if re.search(r'could not|status code|failed', line, re.I):
             for authority in re.findall(r'https?://([^/\s\'"<>]+)', line):
@@ -600,7 +605,8 @@ def gradle_failure_summary(output, retries=0):
         statuses.update(int(code) for code in re.findall(r'(?i)(?:status code|HTTP/[0-9.]+) ([1-5][0-9]{2})\b', line))
         for pattern, found in ((r"Execution failed for task '([^']*)'", tasks), (r"for configuration '([^']*)'", configurations)):
             for value in re.findall(pattern, line):
-                if GRADLE_PATH.fullmatch(value) and value not in found:
+                if (len(value) <= 120 and GRADLE_PATH.fullmatch(value) and value not in found
+                        and not any(secret in value for secret in secrets)):
                     found.append(value)
     return {'repositoryHosts': sorted(hosts)[:SUMMARY_LIMIT], 'httpStatus': sorted(statuses)[:SUMMARY_LIMIT],
             'failedTasks': tasks[:SUMMARY_LIMIT], 'configurations': configurations[:SUMMARY_LIMIT], 'retries': retries}

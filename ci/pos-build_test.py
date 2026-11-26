@@ -309,6 +309,23 @@ class GradleSummaryTests(unittest.TestCase):
                        'nexus', 'never-public', '/home/runner', 'rm -rf']:
             self.assertNotIn(secret, text)
 
+    def test_task_and_configuration_paths_must_be_gradle_identifiers_without_secret_values(self):
+        output = (b"Execution failed for task ':app:10.0.0.8'.\n"
+                  b"Execution failed for task ':app:1secret'.\n"
+                  b"Execution failed for task ':app:a.b'.\n"
+                  b"Execution failed for task ':app:SYNTHETIC_SECRET_123'.\n"
+                  b"Execution failed for task ':flutter_plugin_android_lifecycle:compileReleaseKotlin'.\n"
+                  b"> Could not resolve all files for configuration 'classpath'.\n"
+                  b"> Could not resolve all files for configuration ':app:x_SYNTHETIC_SECRET_123_y'.\n")
+        with patch.dict(os.environ, {'ANDROID_KEY_PASSWORD': 'SYNTHETIC_SECRET_123', 'SHORT_TOKEN': 'app'}):
+            summary = build.gradle_failure_summary(output)
+        self.assertEqual(summary['failedTasks'], [':flutter_plugin_android_lifecycle:compileReleaseKotlin'])
+        self.assertEqual(summary['configurations'], ['classpath'])
+        self.assertNotIn('10.0.0.8', json.dumps(summary))
+        # 已知限制：合法标识符形态且不含环境密钥值的名称会原样公开。
+        with patch.dict(os.environ, {'ANDROID_KEY_PASSWORD': 'unrelated-value'}):
+            self.assertIn(':app:SYNTHETIC_SECRET_123', build.gradle_failure_summary(output)['failedTasks'])
+
     def test_summary_is_bounded_and_empty_for_non_gradle_output(self):
         self.assertFalse(any(build.gradle_failure_summary(b'private source text\nsecret value').values()))
         many = b''.join(b"Execution failed for task ':m%d:x'.\n" % index for index in range(50))
