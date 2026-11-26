@@ -133,6 +133,22 @@ jobs:
         if: matrix.platform == 'terminal-android'
         id: toolchain
         run: python3 automation/ci/pos-build.py toolchain
+      - name: 恢复 Gradle 依赖缓存
+        # 只缓存 Gradle 官方认可可搬移的只读依赖缓存（files-2.1、metadata-*）和 wrapper 发行包，
+        # 不含构建缓存、转换产物或守护进程等与本机路径相关的状态。actions/cache 对目录整体递归归档、
+        # 不能按文件名排除，锁文件与未完成下载由保存前的「清理 Gradle 缓存中的锁与未完成下载」步骤删除。
+        # key 含 Gradle 配置与 wrapper 版本哈希：仓库/镜像顺序一变就不复用旧缓存，镜像顺序始终由本轮源码的
+        # settings.gradle.kts 决定；restore-keys 只在同一配置哈希内按 pubspec.lock 回退。仅成功的作业写回缓存。
+        if: matrix.platform == 'android' || matrix.platform == 'terminal-android'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.gradle/caches/modules-2/files-2.1
+            ~/.gradle/caches/modules-2/metadata-*
+            ~/.gradle/wrapper/dists
+          key: gradle-deps-v1-${{ runner.os }}-${{ matrix.platform }}-${{ steps.toolchain.outputs.mode || 'default' }}-${{ hashFiles('source/apps/pos/android/**/*.gradle', 'source/apps/pos/android/**/*.gradle.kts', 'source/apps/pos/android/**/gradle.properties', 'source/apps/pos/android/gradle/wrapper/gradle-wrapper.properties', 'source/dev/packaging/terminal-android/**') }}-${{ hashFiles('source/apps/pos/pubspec.lock') }}
+          restore-keys: |
+            gradle-deps-v1-${{ runner.os }}-${{ matrix.platform }}-${{ steps.toolchain.outputs.mode || 'default' }}-${{ hashFiles('source/apps/pos/android/**/*.gradle', 'source/apps/pos/android/**/*.gradle.kts', 'source/apps/pos/android/**/gradle.properties', 'source/apps/pos/android/gradle/wrapper/gradle-wrapper.properties', 'source/dev/packaging/terminal-android/**') }}-
       - name: 准备安卓固定工具链
         if: matrix.platform == 'android' || (matrix.platform == 'terminal-android' && steps.toolchain.outputs.mode == 'default')
         shell: bash
@@ -197,6 +213,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python automation/ci/pos-build.py publish
+      - name: 清理 Gradle 缓存中的锁与未完成下载
+        # actions/cache 在作业末尾（且仅作业成功时）保存缓存；此前删除所缓存目录下的 *.lock、*.part、*.lck，
+        # 归档里只留下已完成的依赖与发行包。目录不存在或是链接时跳过。
+        if: success() && (matrix.platform == 'android' || matrix.platform == 'terminal-android')
+        run: |
+          set -euo pipefail
+          for dir in "$HOME/.gradle/caches/modules-2/files-2.1" "$HOME"/.gradle/caches/modules-2/metadata-* "$HOME/.gradle/wrapper/dists"; do
+            if [[ -d "$dir" && ! -L "$dir" ]]; then
+              find "$dir" -type f \( -name '*.lock' -o -name '*.part' -o -name '*.lck' \) -delete
+            fi
+          done
       - name: 清理安卓签名临时文件
         if: always() && (matrix.platform == 'android' || matrix.platform == 'terminal-android')
         run: python3 automation/ci/pos-build.py cleanup

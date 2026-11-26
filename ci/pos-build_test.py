@@ -281,6 +281,95 @@ def fake_source(platforms=None):
     return fake
 
 
+GRADLE_FAILURE = b"""FAILURE: Build failed with an exception.
+* What went wrong:
+Execution failed for task ':app:checkReleaseAarMetadata'.
+> Could not resolve all files for configuration ':app:releaseRuntimeClasspath'.
+   > Could not GET 'https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-bom/2.0.21/kotlin-bom-2.0.21.pom'. Received status code 429 from server: Too Many Requests
+   > Could not HEAD 'https://x-access-token:ghs_secretTokenValue@maven.pkg.github.com/sdbcbt/CloudLinkPOS/private.pom'. Received status code 401 from server: Unauthorized
+   > Could not GET 'http://10.0.0.8:8081/nexus/private.pom'. Received status code 503 from server
+   > Could not GET 'https://plugins.gradle.org:443/m2/org/jetbrains/kotlin/kotlin-gradle-plugin-api/2.0.21/x.pom'.
+Execution failed for task ':private plugin;rm -rf'.
+ANDROID_KEY_PASSWORD=never-public /home/runner/work/source/apps/pos/android
+"""
+
+
+class GradleSummaryTests(unittest.TestCase):
+    def test_summary_keeps_only_public_hosts_status_codes_and_gradle_paths(self):
+        summary = build.gradle_failure_summary(GRADLE_FAILURE, 2)
+        self.assertEqual(summary, {
+            'repositoryHosts': ['other', 'plugins.gradle.org', 'repo.maven.apache.org'],
+            'httpStatus': [401, 429, 503],
+            'failedTasks': [':app:checkReleaseAarMetadata'],
+            'configurations': [':app:releaseRuntimeClasspath'],
+            'retries': 2,
+        })
+        text = json.dumps(summary)
+        for secret in ['ghs_secretTokenValue', 'x-access-token', 'maven.pkg.github.com', 'sdbcbt', 'CloudLinkPOS', '10.0.0.8',
+                       'nexus', 'never-public', '/home/runner', 'rm -rf']:
+            self.assertNotIn(secret, text)
+
+    def test_task_and_configuration_paths_must_be_gradle_identifiers_without_secret_values(self):
+        output = (b"Execution failed for task ':app:10.0.0.8'.\n"
+                  b"Execution failed for task ':app:1secret'.\n"
+                  b"Execution failed for task ':app:a.b'.\n"
+                  b"Execution failed for task ':app:SYNTHETIC_SECRET_123'.\n"
+                  b"Execution failed for task ':flutter_plugin_android_lifecycle:compileReleaseKotlin'.\n"
+                  b"> Could not resolve all files for configuration 'classpath'.\n"
+                  b"> Could not resolve all files for configuration ':app:x_SYNTHETIC_SECRET_123_y'.\n")
+        with patch.dict(os.environ, {'ANDROID_KEY_PASSWORD': 'SYNTHETIC_SECRET_123', 'SHORT_TOKEN': 'app'}):
+            summary = build.gradle_failure_summary(output)
+        self.assertEqual(summary['failedTasks'], [':flutter_plugin_android_lifecycle:compileReleaseKotlin'])
+        self.assertEqual(summary['configurations'], ['classpath'])
+        self.assertNotIn('10.0.0.8', json.dumps(summary))
+        # 已知限制：合法标识符形态且不含环境密钥值的名称会原样公开。
+        with patch.dict(os.environ, {'ANDROID_KEY_PASSWORD': 'unrelated-value'}):
+            self.assertIn(':app:SYNTHETIC_SECRET_123', build.gradle_failure_summary(output)['failedTasks'])
+
+    def test_summary_is_bounded_and_empty_for_non_gradle_output(self):
+        self.assertFalse(any(build.gradle_failure_summary(b'private source text\nsecret value').values()))
+        many = b''.join(b"Execution failed for task ':m%d:x'.\n" % index for index in range(50))
+        self.assertEqual(len(build.gradle_failure_summary(many)['failedTasks']), build.SUMMARY_LIMIT)
+
+    def test_entry_publishes_redacted_summary_after_retries_and_private_log_is_unchanged(self):
+        script = Path(__file__).with_name('pos-build.py').resolve()
+        code = """
+import runpy, subprocess, sys, time
+from unittest.mock import patch
+failure = subprocess.CompletedProcess(['private argument'], 1, stdout=sys.stdin.buffer.read(), stderr=b'')
+sys.argv = [sys.argv[1], 'android']
+with patch.object(subprocess, 'run', return_value=failure) as invoke, patch.object(time, 'sleep'):
+    try:
+        runpy.run_path(sys.argv[0], run_name='__main__')
+    finally:
+        print('attempts=%d' % invoke.call_count)
+"""
+        with tempfile.TemporaryDirectory() as folder:
+            env = dict(os.environ, GITHUB_REPOSITORY='sdbcbt/CloudLinkPOS-CI', GITHUB_REF='refs/heads/main', RUNNER_TEMP=folder,
+                       GRADLE_USER_HOME=str(Path(folder) / 'gradle'), POS_VERSION='1.0.1', POS_BUILD_NUMBER='1',
+                       POS_SOURCE_SHA='a' * 40, PYTHONIOENCODING='utf-8')
+            result = subprocess.run([os.sys.executable, '-c', code, str(script)], env=env, input=GRADLE_FAILURE,
+                                    capture_output=True, cwd=folder)
+            private = (Path(folder) / 'cloudlinkpos-pos-first-failure.log').read_bytes()
+        self.assertEqual(result.returncode, 1)
+        stdout, stderr = result.stdout.decode('utf-8'), result.stderr.decode('utf-8')
+        # 摘要与 429 重试分属两个提交、可分别回滚：未启用重试时重试次数为 0。
+        retries = build.GRADLE_RETRY_LIMIT if hasattr(build, 'run_gradle') else 0
+        for attempt in range(1, retries + 1):
+            self.assertIn(f'第 {attempt}/{retries} 次重试', stdout)
+        self.assertIn('attempts=%d' % (retries + 1), stdout)
+        lines = stderr.splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith('Gradle 构建失败摘要（已脱敏）：'))
+        self.assertEqual(json.loads(lines[0].split('：', 1)[1])['retries'], retries)
+        self.assertIn('"httpStatus": [401, 429, 503]', lines[0])
+        self.assertTrue(lines[1].startswith('::error::收银客户端构建停止于：android；子阶段：android.compile；'))
+        for secret in ['ghs_secretTokenValue', 'maven.pkg.github.com', '10.0.0.8', 'never-public', 'private argument']:
+            self.assertNotIn(secret, stdout + stderr)
+        # 私库 CheckRun 使用的私有日志仍是完整原文。
+        self.assertIn(b'ghs_secretTokenValue', private)
+
+
 class FakeScope:
     """模拟新源码 dev/packaging/client_scope.py：按固定表返回受影响产品。"""
     TABLE = {
@@ -459,6 +548,152 @@ class TerminalBuildTests(unittest.TestCase):
             build.main('package')
 
 
+RATE_LIMITED = (b"> Could not GET 'https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.0.21/kotlin-stdlib-2.0.21.pom'. "
+                b"Received status code 429 from server: Too Many Requests\n")
+
+
+class GradleRetryTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.runner = self.base / 'runner'
+        self.runner.mkdir()
+        self.gradle = self.base / 'gradle-home'
+        (self.gradle / '.tmp').mkdir(parents=True)
+        self.log = self.runner / 'cloudlinkpos-pos-first-failure.log'
+        self.env = {'RUNNER_TEMP': str(self.runner), 'GRADLE_USER_HOME': str(self.gradle)}
+
+    def results(self, *outputs):
+        # None 代表成功；字节串代表失败输出（由真实 run 写入私有首个失败日志）。
+        return [subprocess.CompletedProcess(['gradle'], 0, stdout=b'ok', stderr=b'') if item is None else
+                subprocess.CompletedProcess(['gradle'], 1, stdout=item, stderr=b'') for item in outputs]
+
+    def invoke(self, outputs, reset=None):
+        printed = []
+        with patch.dict(os.environ, self.env), patch.object(build.subprocess, 'run', side_effect=self.results(*outputs)) as invoke, \
+                patch.object(build.time, 'sleep') as sleep, patch.object(build.random, 'uniform', side_effect=lambda low, high: high) as jitter, \
+                patch('builtins.print', side_effect=lambda *args, **kwargs: printed.append(' '.join(map(str, args)))):
+            try:
+                result, error = build.run_gradle(['gradle'], self.base, reset=reset), None
+            except build.BuildFailure as failure:
+                result, error = None, failure
+        return result, error, invoke, sleep, jitter, printed
+
+    def test_rate_limit_retries_after_clearing_partial_downloads_then_succeeds(self):
+        partial = self.gradle / '.tmp/gradle_download123.bin'
+        partial.write_bytes(b'half')
+        done = self.gradle / 'caches/modules-2/files-2.1/org.jetbrains.kotlin/kotlin-stdlib/2.0.21/abc/kotlin-stdlib-2.0.21.pom'
+        done.parent.mkdir(parents=True)
+        done.write_bytes(b'complete')
+        unfinished = done.with_name('kotlin-stdlib-2.0.21.jar.part')
+        unfinished.write_bytes(b'half')
+        result, error, invoke, sleep, jitter, printed = self.invoke([RATE_LIMITED, None])
+        self.assertIsNone(error)
+        self.assertEqual(result, b'ok')
+        self.assertEqual(invoke.call_count, 2)
+        jitter.assert_called_once_with(0, 15.0)
+        sleep.assert_called_once_with(45.0)
+        self.assertFalse(partial.exists())
+        self.assertFalse(unfinished.exists())
+        self.assertTrue(done.exists())
+        # 成功后不残留首个失败日志，后续阶段失败时私库检查拿到的是真实首个失败。
+        self.assertFalse(self.log.exists())
+        self.assertEqual(printed, ['Gradle 依赖下载收到 HTTP 429 限流：第 1/2 次重试，已清理未完成下载 2 个，等待 45.0 秒'])
+
+    def test_rate_limit_is_retried_at_most_twice_with_exponential_backoff(self):
+        last = RATE_LIMITED + b'attempt three'
+        _, error, invoke, sleep, jitter, printed = self.invoke([RATE_LIMITED, RATE_LIMITED, last, None])
+        self.assertIsInstance(error, build.BuildFailure)
+        self.assertEqual(error.retries, 2)
+        self.assertEqual(invoke.call_count, 3)
+        self.assertEqual([call.args for call in jitter.call_args_list], [(0, 15.0), (0, 30.0)])
+        self.assertEqual([call.args for call in sleep.call_args_list], [(45.0,), (90.0,)])
+        self.assertEqual(len(printed), 2)
+        self.assertIn('第 2/2 次重试', printed[1])
+        # 最终失败只保留最后一次尝试的私有日志。
+        self.assertIn(b'attempt three', self.log.read_bytes())
+
+    def test_other_failures_are_not_retried(self):
+        for output in [b'Could not resolve all files for configuration\nReceived status code 403 from server: Forbidden',
+                       b'Compilation failed; see the compiler error output', b'Received status code 4290 from proxy']:
+            with self.subTest(output=output):
+                if self.log.exists():
+                    self.log.unlink()
+                _, error, invoke, sleep, _, printed = self.invoke([output, None])
+                self.assertEqual(error.retries, 0)
+                self.assertEqual(invoke.call_count, 1)
+                sleep.assert_not_called()
+                self.assertEqual(printed, [])
+                self.assertTrue(self.log.exists())
+
+    def test_existing_failure_log_or_missing_runner_temp_disables_retry(self):
+        self.log.write_bytes(b'earlier failure')
+        _, error, invoke, sleep, _, _ = self.invoke([RATE_LIMITED, None])
+        self.assertEqual((error.retries, invoke.call_count), (0, 1))
+        sleep.assert_not_called()
+        self.assertEqual(self.log.read_bytes(), b'earlier failure')
+        del self.env['RUNNER_TEMP']
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('RUNNER_TEMP', None)
+            _, error, invoke, sleep, _, _ = self.invoke([RATE_LIMITED, None])
+        self.assertEqual((error.retries, invoke.call_count), (0, 1))
+        sleep.assert_not_called()
+
+    def test_reset_runs_before_retry_and_reset_failure_keeps_original_failure(self):
+        reset = Mock()
+        _, error, _, _, _, _ = self.invoke([RATE_LIMITED, None], reset=reset)
+        self.assertIsNone(error)
+        reset.assert_called_once_with()
+        broken = Mock(side_effect=ValueError('拒绝清理'))
+        _, error, invoke, sleep, _, _ = self.invoke([RATE_LIMITED, None], reset=broken)
+        self.assertEqual((error.retries, invoke.call_count), (0, 1))
+        sleep.assert_not_called()
+        self.assertIn(b'status code 429', self.log.read_bytes())
+
+    def test_partial_download_cleanup_failure_keeps_original_failure_and_private_log(self):
+        with patch.object(build, 'clear_partial_downloads', side_effect=PermissionError('busy')):
+            _, error, invoke, sleep, _, printed = self.invoke([RATE_LIMITED, None])
+        self.assertIsInstance(error, build.BuildFailure)
+        self.assertEqual((error.retries, error.returncode, invoke.call_count), (0, 1, 1))
+        sleep.assert_not_called()
+        self.assertEqual(printed, [])
+        self.assertIn(b'status code 429', self.log.read_bytes())
+
+    def test_only_gradle_build_commands_use_retry(self):
+        signature = b'Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256.encode() + b'\n'
+        root = self.base / 'source'
+        (root / 'sdk/build-tools/35.0.0').mkdir(parents=True)
+        (root / 'sdk/build-tools/35.0.0/apksigner').write_text('')
+        env = {'ANDROID_HOME': str(root / 'sdk'), 'POS_VERSION': '1.0.1', 'POS_BUILD_NUMBER': '1', 'POS_SOURCE_SHA': 'a' * 40,
+               'GITHUB_ENV': str(self.base / 'env'), 'RELEASE_PLATFORM': ''}
+        for command in (build.android, build.terminal_android):
+            with self.subTest(command=command.__name__), patch.dict(os.environ, env), \
+                    patch.object(build, 'ROOT', root), patch.object(build, 'module'), \
+                    patch.object(build, 'run', side_effect=[signature, b"package: name='com.cloudlinkpos.terminal'\n"]), \
+                    patch.object(build, 'run_gradle', side_effect=AssertionError('签名与版本核验不得重试')), \
+                    patch.object(build, 'flutter') as flutter:
+                command()
+                self.assertEqual(flutter.call_args.args[0:2], ('build', 'apk'))
+                self.assertIs(flutter.call_args.kwargs['gradle'], True)
+        with patch.object(build, 'run_gradle') as retry, patch.object(build, 'run') as plain:
+            build.flutter('pub', 'get', '--enforce-lockfile')
+            build.flutter('build', 'apk', gradle=True)
+        self.assertEqual(plain.call_count, 1)
+        self.assertEqual(retry.call_count, 1)
+
+    def test_api22_workspace_reset_removes_owned_signing_copy_and_workspace(self):
+        workspace = self.runner / build.TERMINAL_BUILD_WORKSPACE
+        (workspace / 'apps/pos/android').mkdir(parents=True)
+        with patch.dict(os.environ, self.env), patch.object(build, 'cleanup_terminal_workspace') as cleanup:
+            build.reset_terminal_build_workspace()
+        cleanup.assert_called_once_with()
+        self.assertFalse(workspace.exists())
+        with patch.dict(os.environ, self.env), patch.object(build, 'cleanup_terminal_workspace', side_effect=ValueError('拒绝清理')), \
+                self.assertRaises(ValueError):
+            build.reset_terminal_build_workspace()
+
+
 class SigningTests(unittest.TestCase):
     def test_only_the_fixed_cloudlinkpos_release_certificate_is_accepted(self):
         fixed = 'Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256 + '\n'
@@ -568,6 +803,74 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(services['default'], 'changed')
         self.assertIs(services['required'], False)
         self.assertEqual(main['jobs']['build']['with']['services'], "${{ inputs.services || 'changed' }}")
+
+
+class GradleCacheWorkflowTests(unittest.TestCase):
+    def test_android_jobs_cache_only_relocatable_gradle_dependencies(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        steps = yaml.safe_load((root / '.github/workflows/client-release.yml').read_text())['jobs']['build']['steps']
+        names = [step.get('name') for step in steps]
+        cache = steps[names.index('恢复 Gradle 依赖缓存')]
+        self.assertEqual(cache['if'], "matrix.platform == 'android' || matrix.platform == 'terminal-android'")
+        self.assertEqual(cache['uses'], 'actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830')
+        # 缓存在读取源码与判定工具链之后、任何 Gradle 构建之前恢复。
+        self.assertLess(names.index('静默读取已合并固定源码'), names.index('恢复 Gradle 依赖缓存'))
+        self.assertLess(names.index('判定手持安卓工具链'), names.index('恢复 Gradle 依赖缓存'))
+        self.assertLess(names.index('恢复 Gradle 依赖缓存'), names.index('静默运行打包边界与软件版本测试'))
+        self.assertEqual(set(cache['with']), {'path', 'key', 'restore-keys'})
+        paths = cache['with']['path'].split()
+        # actions/cache 对目录整体递归归档、不支持按文件名排除，所以不写无效的 ! 规则。
+        self.assertEqual(paths, ['~/.gradle/caches/modules-2/files-2.1', '~/.gradle/caches/modules-2/metadata-*',
+                                 '~/.gradle/wrapper/dists'])
+        key, restore = cache['with']['key'], cache['with']['restore-keys'].strip()
+        for part in ['matrix.platform', 'steps.toolchain.outputs.mode', "'source/apps/pos/android/gradle/wrapper/gradle-wrapper.properties'",
+                     "'source/apps/pos/android/**/*.gradle.kts'", "'source/apps/pos/pubspec.lock'"]:
+            self.assertIn(part, key)
+        # 回退只允许同一 Gradle 配置哈希：镜像顺序变化后不复用旧解析结果。
+        self.assertTrue(key.startswith(restore))
+        self.assertNotIn('pubspec.lock', restore)
+        self.assertIn('gradle-wrapper.properties', restore)
+
+    def test_locks_and_partial_downloads_are_deleted_before_cache_is_saved(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        steps = yaml.safe_load((root / '.github/workflows/client-release.yml').read_text())['jobs']['build']['steps']
+        names = [step.get('name') for step in steps]
+        clean = steps[names.index('清理 Gradle 缓存中的锁与未完成下载')]
+        self.assertEqual(clean['if'], "success() && (matrix.platform == 'android' || matrix.platform == 'terminal-android')")
+        self.assertNotIn('${{', clean['run'])
+        self.assertNotIn('env', clean)
+        # 缓存在作业末尾保存：清理位于全部 Gradle 构建与发布之后，失败回写步骤之前。
+        for build_step in ['静默构建并核验固定正式签名安卓安装包', '静默构建并核验手持刷卡终端安装包', '核验并发布公开永久下载附件']:
+            self.assertLess(names.index(build_step), names.index('清理 Gradle 缓存中的锁与未完成下载'))
+        self.assertLess(names.index('清理 Gradle 缓存中的锁与未完成下载'), names.index('检查私有失败日志'))
+        # 用夹具实跑该脚本，证明待归档目录里只剩完整文件。
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            gradle = home / '.gradle'
+            kept = [gradle / 'caches/modules-2/files-2.1/org/x/1.0/abc/x-1.0.pom',
+                    gradle / 'caches/modules-2/metadata-2.107/descriptors/x/descriptor.bin',
+                    gradle / 'wrapper/dists/gradle-8.12-all/hash/gradle-8.12-all.zip',
+                    gradle / 'wrapper/dists/gradle-8.12-all/hash/gradle-8.12-all.zip.ok']
+            removed = [gradle / 'caches/modules-2/metadata-2.107/sample.lock',
+                       gradle / 'caches/modules-2/files-2.1/org/x/1.0/abc/x-1.0.jar.part',
+                       gradle / 'wrapper/dists/gradle-8.12-all/hash/gradle.zip.part',
+                       gradle / 'wrapper/dists/gradle-8.12-all/hash/gradle.zip.lck']
+            outside = gradle / 'caches/modules-2/modules-2.lock'
+            for path in kept + removed + [outside]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('x')
+            result = subprocess.run(['bash', '-c', clean['run']], env=dict(os.environ, HOME=str(home)), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual([path.exists() for path in kept], [True] * len(kept))
+            self.assertEqual([path.exists() for path in removed], [False] * len(removed))
+            # 未缓存的目录不受影响。
+            self.assertTrue(outside.exists())
+            empty = home / 'empty'
+            empty.mkdir()
+            result = subprocess.run(['bash', '-c', clean['run']], env=dict(os.environ, HOME=str(empty)), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 
