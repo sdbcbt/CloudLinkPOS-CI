@@ -143,13 +143,14 @@ def run_gradle(args, cwd=None, env=None, reset=None):
             failure.retries = attempt
             if attempt >= GRADLE_RETRY_LIMIT or existed or not gradle_rate_limited(log):
                 raise
-            if reset is not None:
-                try:
+            # 任一清理失败都放弃重试并保留原始失败与私有日志；日志只在清理全部成功后删除。
+            try:
+                if reset is not None:
                     reset()
-                except Exception:
-                    raise failure from None
-            log.unlink()
-            removed = clear_partial_downloads()
+                removed = clear_partial_downloads()
+                log.unlink()
+            except Exception:
+                raise failure from None
             window = GRADLE_RETRY_BASE_SECONDS * 2 ** attempt
             delay = window + random.uniform(0, window / 2)
             print(f'Gradle 依赖下载收到 HTTP 429 限流：第 {attempt + 1}/{GRADLE_RETRY_LIMIT} 次重试，'

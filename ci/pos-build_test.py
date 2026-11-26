@@ -634,6 +634,15 @@ class GradleRetryTests(unittest.TestCase):
         sleep.assert_not_called()
         self.assertIn(b'status code 429', self.log.read_bytes())
 
+    def test_partial_download_cleanup_failure_keeps_original_failure_and_private_log(self):
+        with patch.object(build, 'clear_partial_downloads', side_effect=PermissionError('busy')):
+            _, error, invoke, sleep, _, printed = self.invoke([RATE_LIMITED, None])
+        self.assertIsInstance(error, build.BuildFailure)
+        self.assertEqual((error.retries, error.returncode, invoke.call_count), (0, 1, 1))
+        sleep.assert_not_called()
+        self.assertEqual(printed, [])
+        self.assertIn(b'status code 429', self.log.read_bytes())
+
     def test_only_gradle_build_commands_use_retry(self):
         signature = b'Number of signers: 1\nSigner #1 certificate SHA-256 digest: ' + build.ANDROID_SIGNER_CERT_SHA256.encode() + b'\n'
         root = self.base / 'source'
