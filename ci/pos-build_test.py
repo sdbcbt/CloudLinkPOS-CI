@@ -281,6 +281,78 @@ def fake_source(platforms=None):
     return fake
 
 
+GRADLE_FAILURE = b"""FAILURE: Build failed with an exception.
+* What went wrong:
+Execution failed for task ':app:checkReleaseAarMetadata'.
+> Could not resolve all files for configuration ':app:releaseRuntimeClasspath'.
+   > Could not GET 'https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-bom/2.0.21/kotlin-bom-2.0.21.pom'. Received status code 429 from server: Too Many Requests
+   > Could not HEAD 'https://x-access-token:ghs_secretTokenValue@maven.pkg.github.com/sdbcbt/CloudLinkPOS/private.pom'. Received status code 401 from server: Unauthorized
+   > Could not GET 'http://10.0.0.8:8081/nexus/private.pom'. Received status code 503 from server
+   > Could not GET 'https://plugins.gradle.org:443/m2/org/jetbrains/kotlin/kotlin-gradle-plugin-api/2.0.21/x.pom'.
+Execution failed for task ':private plugin;rm -rf'.
+ANDROID_KEY_PASSWORD=never-public /home/runner/work/source/apps/pos/android
+"""
+
+
+class GradleSummaryTests(unittest.TestCase):
+    def test_summary_keeps_only_public_hosts_status_codes_and_gradle_paths(self):
+        summary = build.gradle_failure_summary(GRADLE_FAILURE, 2)
+        self.assertEqual(summary, {
+            'repositoryHosts': ['other', 'plugins.gradle.org', 'repo.maven.apache.org'],
+            'httpStatus': [401, 429, 503],
+            'failedTasks': [':app:checkReleaseAarMetadata'],
+            'configurations': [':app:releaseRuntimeClasspath'],
+            'retries': 2,
+        })
+        text = json.dumps(summary)
+        for secret in ['ghs_secretTokenValue', 'x-access-token', 'maven.pkg.github.com', 'sdbcbt', 'CloudLinkPOS', '10.0.0.8',
+                       'nexus', 'never-public', '/home/runner', 'rm -rf']:
+            self.assertNotIn(secret, text)
+
+    def test_summary_is_bounded_and_empty_for_non_gradle_output(self):
+        self.assertFalse(any(build.gradle_failure_summary(b'private source text\nsecret value').values()))
+        many = b''.join(b"Execution failed for task ':m%d:x'.\n" % index for index in range(50))
+        self.assertEqual(len(build.gradle_failure_summary(many)['failedTasks']), build.SUMMARY_LIMIT)
+
+    def test_entry_publishes_redacted_summary_after_retries_and_private_log_is_unchanged(self):
+        script = Path(__file__).with_name('pos-build.py').resolve()
+        code = """
+import runpy, subprocess, sys, time
+from unittest.mock import patch
+failure = subprocess.CompletedProcess(['private argument'], 1, stdout=sys.stdin.buffer.read(), stderr=b'')
+sys.argv = [sys.argv[1], 'android']
+with patch.object(subprocess, 'run', return_value=failure) as invoke, patch.object(time, 'sleep'):
+    try:
+        runpy.run_path(sys.argv[0], run_name='__main__')
+    finally:
+        print('attempts=%d' % invoke.call_count)
+"""
+        with tempfile.TemporaryDirectory() as folder:
+            env = dict(os.environ, GITHUB_REPOSITORY='sdbcbt/CloudLinkPOS-CI', GITHUB_REF='refs/heads/main', RUNNER_TEMP=folder,
+                       GRADLE_USER_HOME=str(Path(folder) / 'gradle'), POS_VERSION='1.0.1', POS_BUILD_NUMBER='1',
+                       POS_SOURCE_SHA='a' * 40, PYTHONIOENCODING='utf-8')
+            result = subprocess.run([os.sys.executable, '-c', code, str(script)], env=env, input=GRADLE_FAILURE,
+                                    capture_output=True, cwd=folder)
+            private = (Path(folder) / 'cloudlinkpos-pos-first-failure.log').read_bytes()
+        self.assertEqual(result.returncode, 1)
+        stdout, stderr = result.stdout.decode('utf-8'), result.stderr.decode('utf-8')
+        # 摘要与 429 重试分属两个提交、可分别回滚：未启用重试时重试次数为 0。
+        retries = build.GRADLE_RETRY_LIMIT if hasattr(build, 'run_gradle') else 0
+        for attempt in range(1, retries + 1):
+            self.assertIn(f'第 {attempt}/{retries} 次重试', stdout)
+        self.assertIn('attempts=%d' % (retries + 1), stdout)
+        lines = stderr.splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith('Gradle 构建失败摘要（已脱敏）：'))
+        self.assertEqual(json.loads(lines[0].split('：', 1)[1])['retries'], retries)
+        self.assertIn('"httpStatus": [401, 429, 503]', lines[0])
+        self.assertTrue(lines[1].startswith('::error::收银客户端构建停止于：android；子阶段：android.compile；'))
+        for secret in ['ghs_secretTokenValue', 'maven.pkg.github.com', '10.0.0.8', 'never-public', 'private argument']:
+            self.assertNotIn(secret, stdout + stderr)
+        # 私库 CheckRun 使用的私有日志仍是完整原文。
+        self.assertIn(b'ghs_secretTokenValue', private)
+
+
 class FakeScope:
     """模拟新源码 dev/packaging/client_scope.py：按固定表返回受影响产品。"""
     TABLE = {

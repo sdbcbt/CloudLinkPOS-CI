@@ -577,6 +577,47 @@ def verify_signer(output):
         raise ValueError('APK 签名证书与固定正式证书不一致')
 
 
+# Gradle 失败的公开脱敏摘要：仓库主机名只取公开白名单，其他一律记为 other；HTTP 状态码只取三位数字；
+# 任务与配置路径只保留 Gradle 路径字符。令牌、账号、内网地址、私库地址与输出原文不进入公开日志。
+PUBLIC_REPOSITORY_HOSTS = frozenset((
+    'repo.maven.apache.org', 'repo1.maven.org', 'plugins.gradle.org', 'plugins-artifacts.gradle.org', 'services.gradle.org',
+    'maven.google.com', 'dl.google.com', 'maven-central.storage-download.googleapis.com', 'storage.googleapis.com',
+    'download.flutter.io', 'jcenter.bintray.com', 'jitpack.io',
+))
+GRADLE_PATH = re.compile(r'[A-Za-z0-9_.:-]{1,120}')
+SUMMARY_LIMIT = 10
+
+
+def gradle_failure_summary(output, retries=0):
+    text = output.decode('utf-8', 'replace')
+    hosts, statuses, tasks, configurations = set(), set(), [], []
+    for line in text.splitlines():
+        if re.search(r'could not|status code|failed', line, re.I):
+            for authority in re.findall(r'https?://([^/\s\'"<>]+)', line):
+                host = authority.rsplit('@', 1)[-1].split(':', 1)[0].lower().rstrip('.')
+                hosts.add(host if host in PUBLIC_REPOSITORY_HOSTS else 'other')
+        statuses.update(int(code) for code in re.findall(r'(?i)(?:status code|HTTP/[0-9.]+) ([1-5][0-9]{2})\b', line))
+        for pattern, found in ((r"Execution failed for task '([^']*)'", tasks), (r"for configuration '([^']*)'", configurations)):
+            for value in re.findall(pattern, line):
+                if GRADLE_PATH.fullmatch(value) and value not in found:
+                    found.append(value)
+    return {'repositoryHosts': sorted(hosts)[:SUMMARY_LIMIT], 'httpStatus': sorted(statuses)[:SUMMARY_LIMIT],
+            'failedTasks': tasks[:SUMMARY_LIMIT], 'configurations': configurations[:SUMMARY_LIMIT], 'retries': retries}
+
+
+def print_gradle_failure_summary(error):
+    # 仅 android.compile 的命令失败且摘要非空时输出；私有日志与私库 CheckRun 的详细内容保持不变。
+    temporary = os.environ.get('RUNNER_TEMP')
+    log = Path(temporary) / 'cloudlinkpos-pos-first-failure.log' if temporary else None
+    try:
+        output = log.read_bytes() if log is not None and log.is_file() and not log.is_symlink() else b''
+    except OSError:
+        output = b''
+    summary = gradle_failure_summary(output, getattr(error, 'retries', 0))
+    if any(summary.values()):
+        print('Gradle 构建失败摘要（已脱敏）：' + json.dumps(summary, ensure_ascii=False), file=sys.stderr)
+
+
 def main(command):
     global SUBSTAGE
     SUBSTAGE = 'none'
@@ -660,6 +701,8 @@ if __name__ == '__main__':
         category = error.category if isinstance(error, BuildFailure) else 'unknown'
         if SUBSTAGE in ('android.signing_tools', 'android.signer_fingerprint'):
             category = 'signing'
+        if SUBSTAGE == 'android.compile' and isinstance(error, BuildFailure):
+            print_gradle_failure_summary(error)
         print('::error::收银客户端构建停止于：' + STAGE + '；子阶段：' + SUBSTAGE +
               '；exit_code=' + str(code) + '；category=' + category + '；请在私库受控环境复现。', file=sys.stderr)
         sys.exit(1)
