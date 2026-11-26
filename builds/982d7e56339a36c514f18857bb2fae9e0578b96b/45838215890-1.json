@@ -1,0 +1,259 @@
+{
+  "sourceSHA": "982d7e56339a36c514f18857bb2fae9e0578b96b",
+  "beforeSHA": "2614f8154568e383cda1d8de41781068646f6038",
+  "expectedServices": [
+    "admin",
+    "cloudsync-api",
+    "inventory-api",
+    "inventory-rpc",
+    "order-api",
+    "organization-api",
+    "organization-rpc",
+    "product-rpc"
+  ],
+  "publicationPolicy": {
+    "grayRequired": false,
+    "generation": 11
+  },
+  "schema": "cloudlinkpos.public-source-build/v1",
+  "sourceRepository": "sdbcbt/CloudLinkPOS",
+  "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+  "runID": "45838215890",
+  "attempt": "1",
+  "workflowSHA": "0cff183b3cabe7bca7a73f69be3ccb1f0665e589",
+  "workflowPath": ".github/workflows/private-main.yml",
+  "receipts": [
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "982d7e56339a36c514f18857bb2fae9e0578b96b",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "0cff183b3cabe7bca7a73f69be3ccb1f0665e589",
+      "runID": "45838215890",
+      "attempt": "1",
+      "service": "admin",
+      "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
+      "tag": "admin-v0.3.199",
+      "digest": "sha256:7f1ebee4ff2d1712929b70f5c7d681f800ac2007e357486a3f246502f9ad4cdd",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "d2cf9a84c7ede292b70ef0987889cd4d5677c7a553767aa2cb3661b3d327a19f",
+      "origin": {
+        "repository": "ghcr.io/sdbcbt/cloudlinkpos",
+        "digest": "sha256:7f1ebee4ff2d1712929b70f5c7d681f800ac2007e357486a3f246502f9ad4cdd",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:7f1ebee4ff2d1712929b70f5c7d681f800ac2007e357486a3f246502f9ad4cdd"
+        }
+      },
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:7f1ebee4ff2d1712929b70f5c7d681f800ac2007e357486a3f246502f9ad4cdd"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "982d7e56339a36c514f18857bb2fae9e0578b96b",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "0cff183b3cabe7bca7a73f69be3ccb1f0665e589",
+      "runID": "45838215890",
+      "attempt": "1",
+      "service": "cloudsync-api",
+      "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
+      "tag": "cloudsync-api-v0.3.84",
+      "digest": "sha256:9efdea872ed12e295b6de2d9297296fea646afafeea164066ac94568b0e36baf",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "a661f243df5864154a3edaa00eea083b04611b0852db5d62a491e51f38cebc3a",
+      "origin": {
+        "repository": "ghcr.io/sdbcbt/cloudlinkpos",
+        "digest": "sha256:9efdea872ed12e295b6de2d9297296fea646afafeea164066ac94568b0e36baf",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:9efdea872ed12e295b6de2d9297296fea646afafeea164066ac94568b0e36baf"
+        }
+      },
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:9efdea872ed12e295b6de2d9297296fea646afafeea164066ac94568b0e36baf"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "982d7e56339a36c514f18857bb2fae9e0578b96b",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "0cff183b3cabe7bca7a73f69be3ccb1f0665e589",
+      "runID": "45838215890",
+      "attempt": "1",
+      "service": "inventory-api",
+      "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
+      "tag": "inventory-api-v0.3.93",
+      "digest": "sha256:1707378b85b108d38f45fa9632fe9618ee60ad2f7d6346ed82b3c8d8df47a9e8",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "442f684dcceb72bea5226d3e3fd38acd979e41f0242fdfdf51af9500684695ce",
+      "origin": {
+        "repository": "ghcr.io/sdbcbt/cloudlinkpos",
+        "digest": "sha256:1707378b85b108d38f45fa9632fe9618ee60ad2f7d6346ed82b3c8d8df47a9e8",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:1707378b85b108d38f45fa9632fe9618ee60ad2f7d6346ed82b3c8d8df47a9e8"
+        }
+      },
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:1707378b85b108d38f45fa9632fe9618ee60ad2f7d6346ed82b3c8d8df47a9e8"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "982d7e56339a36c514f18857bb2fae9e0578b96b",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "0cff183b3cabe7bca7a73f69be3ccb1f0665e589",
+      "runID": "45838215890",
+      "attempt": "1",
+      "service": "inventory-rpc",
+      "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
+      "tag": "inventory-rpc-v0.3.65",
+      "digest": "sha256:f6b951e51f7e49d169f24c0bb45d6f29c437c2244a4a8e6aecd142c29e5159de",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "84d1513102927017c92efa76f59ca51b9aef48eb9364d08bcd7824530e997027",
+      "origin": {
+        "repository": "ghcr.io/sdbcbt/cloudlinkpos",
+        "digest": "sha256:f6b951e51f7e49d169f24c0bb45d6f29c437c2244a4a8e6aecd142c29e5159de",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:f6b951e51f7e49d169f24c0bb45d6f29c437c2244a4a8e6aecd142c29e5159de"
+        }
+      },
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:f6b951e51f7e49d169f24c0bb45d6f29c437c2244a4a8e6aecd142c29e5159de"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "982d7e56339a36c514f18857bb2fae9e0578b96b",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "0cff183b3cabe7bca7a73f69be3ccb1f0665e589",
+      "runID": "45838215890",
+      "attempt": "1",
+      "service": "order-api",
+      "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
+      "tag": "order-api-v0.3.89",
+      "digest": "sha256:a3bc2408e4ee3e9e8e506a1f54d15d6a045bb331b484b86a6ef57faa06861624",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "e7c0f22d6dbbaa7585944c1079956802e24820ab1de31a49a9eaaf65504ab2b5",
+      "origin": {
+        "repository": "ghcr.io/sdbcbt/cloudlinkpos",
+        "digest": "sha256:a3bc2408e4ee3e9e8e506a1f54d15d6a045bb331b484b86a6ef57faa06861624",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:a3bc2408e4ee3e9e8e506a1f54d15d6a045bb331b484b86a6ef57faa06861624"
+        }
+      },
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:a3bc2408e4ee3e9e8e506a1f54d15d6a045bb331b484b86a6ef57faa06861624"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "982d7e56339a36c514f18857bb2fae9e0578b96b",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "0cff183b3cabe7bca7a73f69be3ccb1f0665e589",
+      "runID": "45838215890",
+      "attempt": "1",
+      "service": "organization-api",
+      "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
+      "tag": "organization-api-v0.3.67",
+      "digest": "sha256:09c66c0a2a47c05a9ada7df9b4eaf6dc23d693e74e18e8ef67c6771ba0cad57c",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "524a5ec77b29c9eb4ab914bc87e492fb1692bded78459e1570be4fdde638d067",
+      "origin": {
+        "repository": "ghcr.io/sdbcbt/cloudlinkpos",
+        "digest": "sha256:09c66c0a2a47c05a9ada7df9b4eaf6dc23d693e74e18e8ef67c6771ba0cad57c",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:09c66c0a2a47c05a9ada7df9b4eaf6dc23d693e74e18e8ef67c6771ba0cad57c"
+        }
+      },
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:09c66c0a2a47c05a9ada7df9b4eaf6dc23d693e74e18e8ef67c6771ba0cad57c"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "982d7e56339a36c514f18857bb2fae9e0578b96b",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "0cff183b3cabe7bca7a73f69be3ccb1f0665e589",
+      "runID": "45838215890",
+      "attempt": "1",
+      "service": "organization-rpc",
+      "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
+      "tag": "organization-rpc-v0.3.55",
+      "digest": "sha256:ccea7efe5084937f4d5bf3bf06cc7c000422d526d28ec022c078cf115be19209",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "4445f007329f45536ab1100efb2a0ec0b861a6bd57d5413c17c7af88a93401fa",
+      "origin": {
+        "repository": "ghcr.io/sdbcbt/cloudlinkpos",
+        "digest": "sha256:ccea7efe5084937f4d5bf3bf06cc7c000422d526d28ec022c078cf115be19209",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:ccea7efe5084937f4d5bf3bf06cc7c000422d526d28ec022c078cf115be19209"
+        }
+      },
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:ccea7efe5084937f4d5bf3bf06cc7c000422d526d28ec022c078cf115be19209"
+      }
+    },
+    {
+      "schema": "cloudlinkpos.public-full-build/v1",
+      "sourceRepository": "sdbcbt/CloudLinkPOS",
+      "sourceSHA": "982d7e56339a36c514f18857bb2fae9e0578b96b",
+      "buildRepository": "sdbcbt/CloudLinkPOS-CI",
+      "workflowSHA": "0cff183b3cabe7bca7a73f69be3ccb1f0665e589",
+      "runID": "45838215890",
+      "attempt": "1",
+      "service": "product-rpc",
+      "repository": "registry.cloudlinkpos.com/sdbcbt/cloudlinkpos",
+      "tag": "product-rpc-v0.3.51",
+      "digest": "sha256:a934db580be6768f6052969e9d3b267d891bb995a1cad6f075b1c11ab362f28e",
+      "tagPolicy": "version-and-latest-v1",
+      "metadataSHA256": "8c92105b46761d0444e66e8a06cf37b97fb83fefddff6b8144c0fd09d7207c03",
+      "origin": {
+        "repository": "ghcr.io/sdbcbt/cloudlinkpos",
+        "digest": "sha256:a934db580be6768f6052969e9d3b267d891bb995a1cad6f075b1c11ab362f28e",
+        "privateEvidence": {
+          "authenticated_read": true,
+          "anonymous_pull_denied": true,
+          "image_digest": "sha256:a934db580be6768f6052969e9d3b267d891bb995a1cad6f075b1c11ab362f28e"
+        }
+      },
+      "privateEvidence": {
+        "authenticated_read": true,
+        "anonymous_pull_denied": true,
+        "image_digest": "sha256:a934db580be6768f6052969e9d3b267d891bb995a1cad6f075b1c11ab362f28e"
+      }
+    }
+  ]
+}
